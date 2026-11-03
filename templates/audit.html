@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block body %}
+<h1>Audit trail</h1><p class="sub">Merged from requests.json auditLog and audit-log.csv (deduplicated), newest first.</p>
+<div class="card"><form class="filters" method="get"><div><label>Request</label><select name="id"><option value="">All requests</option>{% for i in ids %}<option {{ 'selected' if i==rid }}>{{ i }}</option>{% endfor %}</select></div><button class="btn">Filter</button></form>
+<table><thead><tr><th>Timestamp</th><th>Request</th><th>Actor</th><th>Action</th><th>From → To</th><th>Details</th></tr></thead><tbody>
+{% for a in rows %}<tr><td class="mono">{{ a.timestamp }}</td><td class="mono"><a href="{{ url_for('detail', rid=a.requestId) }}">{{ a.requestId }}</a></td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.fromStatus or '—' }} → {{ a.toStatus or '—' }}</td><td>{{ a.details }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">No entries.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block body %}
+<h1>New vendor onboarding request</h1><p class="sub">Creates a request ID (VO-YYYYMMDD-NNN, UTC) and routes it to Vendor Intake. Intake collects the remaining details.</p>
+<div class="card" style="max-width:640px"><form method="post">
+<div class="field"><label>Vendor legal name *</label><input name="vendorName" required value="{{ form.get('vendorName','') }}" placeholder="e.g. ACME TECHNOLOGIES INDIA PRIVATE LIMITED"></div>
+<div class="field"><label>Vendor website / contact</label><input name="vendorContact" value="{{ form.get('vendorContact','') }}"></div>
+<div class="grid"><div class="field"><label>Vendor country (optional hint)</label><input name="vendor_country" value="{{ form.get('vendor_country','') }}"></div>
+<div class="field"><label>Business owner (optional hint)</label><input name="business_owner" value="{{ form.get('business_owner','') }}"></div></div>
+<div class="grid"><div class="field"><label>Purpose (optional hint)</label><input name="purpose" value="{{ form.get('purpose','') }}"></div>
+<div class="field"><label>Your name (optional)</label><input name="requester" value="{{ form.get('requester','') }}"></div></div>
+<div class="field"><label>Notes</label><textarea name="notes">{{ form.get('notes','') }}</textarea></div>
+<button class="btn">Create request</button></form></div>{% endblock %}

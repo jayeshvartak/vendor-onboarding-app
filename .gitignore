@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+app.pid
+app.log
+.store.lock
+webhook.env
+backup/
+secrets/
+.env
+*.pem

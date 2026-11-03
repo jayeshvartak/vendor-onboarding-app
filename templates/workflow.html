@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block body %}
+<h1>Workflow</h1><p class="sub">How a vendor onboarding request moves through the org.</p>
+{% from "_flow.html" import diagram %}
+<div class="card"><h2>Vendor onboarding workflow</h2>{{ diagram(None) }}
+<p class="rule" style="margin-top:14px"><b>Rule:</b> After Vendor Intake, the decision <b>“touches customer data?”</b> decides the Security path. <b>YES</b> → Security Approval (Human), which merges into <b>Manager Approval (Human)</b> — not Ops Review. <b>NO</b> → Security is N/A. Vendor Research → Ops Review (Human) → Manager Approval runs in every case.</p></div>
+<div class="card"><h2>Steps</h2><ol><li>LOB Requestor creates a request (this app's <a href="{{ url_for('new_request') }}">New request</a> form) → Vendor Intake.</li>
+<li>Vendor Intake collects details (legal name, country, website, customer data, owner, start date, purpose, pilot length).</li>
+<li>Decision “touches customer data?”: YES → also Security Approval (Human); NO → Security N/A. Research always runs.</li>
+<li>Vendor Research (GLEIF LEI check) → Ops Review (Human) → Manager Approval (Human). Security Approval merges into Manager Approval.</li>
+<li>Human - Manager gives final approve / reject.</li></ol>
+<p class="muted">Track progress on the <a href="{{ url_for('dashboard') }}">Dashboard</a>, <a href="{{ url_for('status') }}">Status lookup</a>, and <a href="{{ url_for('audit') }}">Audit trail</a>.</p></div>{% endblock %}

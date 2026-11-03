@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% block body %}
+<h1>Status lookup</h1><p class="sub">Enter a request ID to see where it is.</p>
+<div class="card" style="max-width:640px"><form class="filters" method="get"><div style="flex:1"><label>Request ID</label><input name="id" value="{{ rid }}" placeholder="VO-20261103-001" style="width:100%"></div><button class="btn">Look up</button></form>
+{% if rid and not r %}<p class="flash error">No request found for <span class="mono">{{ rid }}</span>.</p>{% endif %}
+{% if r %}<dl><dt>Vendor</dt><dd>{{ r.vendorName }}</dd><dt>Status</dt><dd><span class="pill {{ status_class(r.status) }}">{{ r.status }}</span></dd>
+<dt>Current actor</dt><dd>{{ r.currentActor }}</dd><dt>Last updated</dt><dd class="mono">{{ r.lastUpdated }}</dd><dt>Notes</dt><dd>{{ r.notes }}</dd></dl>
+<p><a href="{{ url_for('detail', rid=r.id) }}">Open full request →</a></p>{% endif %}</div>{% endblock %}
