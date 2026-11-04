@@ -29,3 +29,23 @@ Open http://127.0.0.1:8787 (health check: `/healthz`). Stop the app with `./stop
 Writes take an exclusive `flock` on `.store.lock`, then write a temp file and `os.replace` (with an in-place fallback). New requests get `requestedBy: "LOB Requestor (web)"`, `currentActor: "Vendor Intake"`, `status: "With Vendor Intake"`, `manager: "Human - Manager"`, and UTC timestamps `YYYY-MM-DD HH:MM:SS UTC`.
 
 Optional status-change webhooks: copy `webhook.env.example` to `webhook.env` (gitignored) and set `VO_STATUS_WEBHOOK_URL` and `VO_STATUS_WEBHOOK_KEY`.
+
+The web form still creates a request, then completes Vendor Intake on a second submit. The MCP server below does both in one call.
+
+## MCP server
+
+Grok (or any MCP client) connects over stdio:
+
+```bash
+.venv/bin/python mcp_server.py
+```
+
+Server name: `vendor-onboarding`. It reads and writes the same `VO_STORE_DIR` tracker as the web app. Every tool requires `requestor` and `requested_via`. There is no separate create-request tool.
+
+- `submit_onboarding_request` — create the request and complete Vendor Intake together. Requires the vendor legal name and whether it touches customer data. Routes to Vendor Research, and also opens Security Approval when customer data is touched. Sends the `intake_completed` webhook.
+- `record_vendor_research` — save the LEI, entity status, and registration status, then complete Vendor Research and route to Ops Review.
+- `record_ops_review` — record Ops Review approval and route to Manager Approval.
+- `record_security_approval` — record Security Approval. Only valid when the vendor touches customer data. Routes to Manager Approval.
+- `record_manager_decision` — final `approve` or `reject`.
+- `get_onboarding_request` — full record, including intake, research, step timing, and audit.
+- `get_onboarding_status` — status, current actor, and last updated time.
