@@ -159,6 +159,15 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertNotIn("Ops bot", removed.get_data(as_text=True))
         self.assertIn(f"http://127.0.0.1:{PORT}/env", removed.get_data(as_text=True))
 
+    def test_missing_tracker_file_is_created(self):
+        os.rename(vo.JSON_PATH, vo.JSON_PATH + ".held")
+        try:
+            data = vo.load()
+            self.assertEqual(data["requests"], [])
+            self.assertEqual(data["auditLog"], [])
+        finally:
+            os.replace(vo.JSON_PATH + ".held", vo.JSON_PATH)
+
     def test_webhook_test_button_delivers_without_registering(self):
         page = self.client.get("/configuration")
         form = page.get_data(as_text=True).split("<h2>Add webhook</h2>", 1)[1]

@@ -4,13 +4,21 @@ Source of truth: the tracker store (requests.json primary; requests.csv and
 audit-log.csv kept in sync). Override with VO_STORE_DIR.
 """
 import csv
-import fcntl
 import io
 import json
 import os
 import re
 import secrets
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib import error as urlerror
@@ -311,12 +319,25 @@ def now_utc():
 
 @contextmanager
 def store_lock():
-    with open(LOCK_PATH, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+    with open(LOCK_PATH, "a+b") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        else:
+            if fh.seek(0, os.SEEK_END) == 0:
+                fh.write(b"\0")
+                fh.flush()
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _atomic_write(path, text):
@@ -339,6 +360,9 @@ def _atomic_write(path, text):
 
 
 def load():
+    if not os.path.isfile(JSON_PATH):
+        os.makedirs(STORE_DIR, exist_ok=True)
+        _atomic_write(JSON_PATH, json.dumps({"requests": [], "auditLog": []}, indent=2) + "\n")
     with open(JSON_PATH, encoding="utf-8") as fh:
         data = json.load(fh)
     data.setdefault("requests", [])
