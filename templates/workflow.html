@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block body %}
-<h1>Workflow</h1><p class="sub">How a vendor onboarding request moves through the org.</p>
+<h1>Workflow</h1><p class="sub">How a vendor record moves through Vendor Master.</p>
 {% from "_flow.html" import diagram %}
-<div class="card"><h2>Vendor onboarding workflow</h2>{{ diagram(None) }}
+<div class="card"><h2>Vendor Master workflow</h2>{{ diagram(None) }}
 <p class="rule" style="margin-top:14px"><b>Rule:</b> After the Vendor Intake form is submitted, the Vendor Intake step is completed and the decision <b>“touches customer data?”</b> decides the Security path. <b>YES</b> → Security Approval (Human), which merges into <b>Manager Approval (Human)</b> — not Ops Review. <b>NO</b> → Security is N/A. Vendor Research → Ops Review (Human) → Manager Approval runs in every case.</p></div>
 <div class="card"><h2>Step statistics</h2>
 <p class="sub">Completed executions only. Duration is the step end time minus its start time. Each step also stores the requestor and how it was requested (<span class="mono">requested_via</span>); those are on the request detail.</p>

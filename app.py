@@ -1,4 +1,4 @@
-"""Vendor Onboarding — local internal web app.
+"""Vendor Master — system of record for vendors.
 
 Source of truth: the tracker store (requests.json primary; requests.csv and
 audit-log.csv kept in sync). Override with VO_STORE_DIR.
@@ -276,7 +276,7 @@ def webhook_test_payload():
         "vendorName": "",
         "fromStatus": "",
         "toStatus": "",
-        "message": "Test from Vendor Onboarding configuration. This webhook is not registered yet.",
+        "message": "Test from Vendor Master configuration. This webhook is not registered yet.",
         "sentAt": now_utc(),
     }
 
@@ -1239,16 +1239,17 @@ def workflow():
     )
 
 
+def mcp_endpoint():
+    """Streamable HTTP URL for a bot on this machine."""
+    import mcp_server
+    return mcp_server.client_url()
+
+
 def mcp_client_config():
-    python = os.path.join(APP_DIR, ".venv", "bin", "python")
-    if not os.path.isfile(python):
-        python = "python"
     return json.dumps({
         "mcpServers": {
-            "vendor-onboarding": {
-                "command": python,
-                "args": [os.path.join(APP_DIR, "mcp_server.py")],
-                "env": {"VO_STORE_DIR": STORE_DIR},
+            "vendor-master": {
+                "url": mcp_endpoint(),
             }
         }
     }, indent=2)
@@ -1272,7 +1273,7 @@ def _configuration_page(form=None, code=200):
         webhooks=registered_webhooks(),
         form=form or {"name": "", "url": ""},
         mcp_config=mcp_client_config(),
-        mcp_command=os.path.join(APP_DIR, ".venv", "bin", "python") + " " + os.path.join(APP_DIR, "mcp_server.py"),
+        mcp_url=mcp_endpoint(),
         mcp_tools=MCP_TOOLS,
     )
     return body if code == 200 else (body, code)
@@ -1324,5 +1325,14 @@ def healthz():
     return {"ok": True, "store": STORE_DIR, "requests": len(load()["requests"])}
 
 
+def _start_mcp_http():
+    """Run the streamable HTTP MCP server beside the web app."""
+    import threading
+    import mcp_server
+
+    threading.Thread(target=mcp_server.serve, name="vendor-master-mcp", daemon=True).start()
+
+
 if __name__ == "__main__":
+    _start_mcp_http()
     app.run(host=os.environ.get("VO_HOST", "0.0.0.0"), port=int(os.environ.get("VO_PORT", "8787")))

@@ -1,4 +1,4 @@
-"""Store operations for the vendor-onboarding MCP tools.
+"""Store operations for the Vendor Master MCP tools.
 
 Submitting an onboarding request creates the record and completes Vendor Intake
 in one step. There is no separate create-request tool. Every call requires

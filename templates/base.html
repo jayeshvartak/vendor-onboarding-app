@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block title %}Vendor Onboarding{% endblock %}</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=5"></head>
-<body><header><div class="brand">Vendor Onboarding</div><nav>
+<title>{% block title %}Vendor Master{% endblock %}</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=5"></head>
+<body><header><div class="brand">Vendor Master</div><nav>
 <a href="{{ url_for('dashboard') }}" class="{{ 'on' if view=='dashboard' }}">Dashboard</a>
 <a href="{{ url_for('new_request') }}" class="{{ 'on' if view=='new' }}">New request</a>
 <a href="{{ url_for('status') }}" class="{{ 'on' if view=='status' }}">Status lookup</a>
@@ -9,4 +9,4 @@
 <a href="{{ url_for('configuration') }}" class="{{ 'on' if view=='configuration' }}">Configuration</a></nav></header>
 <main>{% with msgs = get_flashed_messages(with_categories=true) %}{% for c,m in msgs %}<div class="flash {{c}}">{{m}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main>
-<footer>Local org demo · no login · source of truth: <span class="mono">{{ store_dir }}</span></footer></body></html>
+<footer>Vendor Master · system of record · no login · source of truth: <span class="mono">{{ store_dir }}</span></footer></body></html>

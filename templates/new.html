@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% block body %}
-<h1>New vendor onboarding request</h1><p class="sub">Creates a request ID (VO-YYYYMMDD-NNN, UTC) and routes it to the Vendor Intake form. Submitting that form completes the Vendor Intake step.</p>
+<h1>New vendor record</h1><p class="sub">Creates a Vendor Master request ID (VO-YYYYMMDD-NNN, UTC) and routes it to the Vendor Intake form. Submitting that form completes the Vendor Intake step.</p>
 <div class="card" style="max-width:640px"><form method="post">
 <div class="field"><label>Vendor legal name *</label><input name="vendorName" required value="{{ form.get('vendorName','') }}" placeholder="e.g. ACME TECHNOLOGIES INDIA PRIVATE LIMITED"></div>
 <div class="field"><label>Vendor website / contact</label><input name="vendorContact" value="{{ form.get('vendorContact','') }}"></div>

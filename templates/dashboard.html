@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% block body %}
-<h1>Requests</h1><p class="sub">{{ total }} vendor onboarding request{{ '' if total==1 else 's' }} in the tracker.</p>
+<h1>Requests</h1><p class="sub">{{ total }} vendor record{{ '' if total==1 else 's' }} in Vendor Master.</p>
 <div class="stats">{% for s in cards %}<a class="stat {{ 'on' if s.key==fs }}" href="?status={{ s.key|urlencode }}"><b>{{ s.count }}</b><span>{{ s.label }}</span></a>{% endfor %}</div>
 <div class="card"><form class="filters" method="get">
 <div><label>Search</label><input name="q" value="{{ q }}" placeholder="Vendor or ID"></div>

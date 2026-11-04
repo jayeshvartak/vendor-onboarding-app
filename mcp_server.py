@@ -1,14 +1,17 @@
-"""Vendor onboarding MCP server for the Grok bot.
+"""Vendor Master MCP server for the Grok bot.
 
-Run over stdio (the usual MCP client connection):
+Streamable HTTP (the Grok bot connects to this URL):
 
     .venv/bin/python mcp_server.py
 
+Default endpoint: http://127.0.0.1:8788/mcp
+Override with VO_MCP_HOST, VO_MCP_PORT, and VO_MCP_PATH.
 The server reads and writes the same tracker as the web app (VO_STORE_DIR).
 There is no create-onboarding-request tool. submit_onboarding_request creates
 the request and completes Vendor Intake together. Every tool requires
 requestor and requested_via.
 """
+import os
 from typing import Annotated
 
 from pydantic import Field
@@ -17,13 +20,19 @@ from mcp.server.mcpserver import MCPServer
 
 import onboarding_api as api
 
+MCP_HOST = os.environ.get("VO_MCP_HOST", "0.0.0.0")
+MCP_PORT = int(os.environ.get("VO_MCP_PORT", "8788"))
+MCP_PATH = os.environ.get("VO_MCP_PATH", "/mcp")
+if not MCP_PATH.startswith("/"):
+    MCP_PATH = "/" + MCP_PATH
+
 server = MCPServer(
-    name="vendor-onboarding",
+    name="vendor-master",
     instructions=(
-        "Vendor onboarding tracker. Submit one onboarding request to create it and "
-        "complete Vendor Intake. Then record research, ops review, security approval "
-        "when the vendor touches customer data, and the manager decision. "
-        "Every tool requires requestor and requested_via."
+        "Vendor Master is the system of record for vendors. Submit one onboarding "
+        "request to create the vendor record and complete Vendor Intake. Then record "
+        "research, ops review, security approval when the vendor touches customer data, "
+        "and the manager decision. Every tool requires requestor and requested_via."
     ),
 )
 
@@ -153,5 +162,23 @@ def get_onboarding_status(
     return api.get_onboarding_status(request_id, requestor, requested_via)
 
 
+def serve():
+    """Serve MCP over streamable HTTP. Blocks until the process stops."""
+    server.run(
+        transport="streamable-http",
+        host=MCP_HOST,
+        port=MCP_PORT,
+        streamable_http_path=MCP_PATH,
+    )
+
+
+def client_url(host=None):
+    """URL a bot on this machine uses. 0.0.0.0 is the bind address, not a client host."""
+    shown = host or MCP_HOST
+    if shown in ("0.0.0.0", "::"):
+        shown = "127.0.0.1"
+    return f"http://{shown}:{MCP_PORT}{MCP_PATH}"
+
+
 if __name__ == "__main__":
-    server.run(transport="stdio")
+    serve()
