@@ -157,6 +157,40 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertNotIn("Ops bot", removed.get_data(as_text=True))
         self.assertIn(f"http://127.0.0.1:{PORT}/env", removed.get_data(as_text=True))
 
+    def test_webhook_test_button_delivers_without_registering(self):
+        page = self.client.get("/configuration")
+        form = page.get_data(as_text=True).split("<h2>Add webhook</h2>", 1)[1]
+        self.assertLess(form.index("Test webhook"), form.index(">Add webhook<"))
+
+        before = len(self.server.hits)
+        saved_before = [row["url"] for row in vo._read_saved_webhooks()]
+        ok = self.client.post("/configuration", data={
+            "action": "test",
+            "name": "Probe",
+            "url": f"http://127.0.0.1:{PORT}/probe",
+            "key": "probe-secret",
+        })
+        self.assertEqual(ok.status_code, 200)
+        body = ok.get_data(as_text=True)
+        self.assertIn("Test webhook accepted", body)
+        self.assertIn("was not registered", body)
+        self.assertNotIn(">Probe<", body)
+        self.assertEqual([row["url"] for row in vo._read_saved_webhooks()], saved_before)
+        hit = self.server.hits[before]
+        self.assertEqual(hit["path"], "/probe")
+        self.assertEqual(hit["auth"], "Bearer probe-secret")
+        self.assertEqual(json.loads(hit["body"])["event"], "webhook_test")
+
+        failed = self.client.post("/configuration", data={
+            "action": "test",
+            "name": "Down",
+            "url": "http://127.0.0.1:9/missing",
+            "key": "probe-secret",
+        })
+        self.assertEqual(failed.status_code, 400)
+        self.assertIn("Test webhook failed", failed.get_data(as_text=True))
+        self.assertEqual([row["url"] for row in vo._read_saved_webhooks()], saved_before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -191,8 +191,7 @@ def _valid_webhook_url(url):
     return parts.scheme in ("http", "https") and bool(parts.netloc)
 
 
-def save_webhook(name, url, key):
-    """Append one webhook. Returns (row, error)."""
+def _webhook_input(name, url, key):
     name = _clean(name, 120)
     url = _clean(url, 2000)
     key = (key or "").strip()
@@ -204,6 +203,15 @@ def save_webhook(name, url, key):
         return None, "Webhook bearer key is required."
     if len(key) > 500:
         return None, "Webhook bearer key is too long."
+    return {"name": name, "url": url, "key": key}, None
+
+
+def save_webhook(name, url, key):
+    """Append one webhook. Returns (row, error)."""
+    fields, err = _webhook_input(name, url, key)
+    if err:
+        return None, err
+    name, url, key = fields["name"], fields["url"], fields["key"]
     with store_lock():
         rows = _read_saved_webhooks()
         known = {(row.get("url") or "").strip() for row in rows}
@@ -237,6 +245,42 @@ def delete_webhook(webhook_id):
     return True
 
 
+def deliver_webhook(url, key, payload):
+    """POST one payload. Returns (ok, detail) where detail is the HTTP status or the error."""
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=5) as resp:
+            resp.read()
+            return True, resp.status
+    except urlerror.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except urlerror.URLError as exc:
+        return False, str(getattr(exc, "reason", exc))
+    except Exception as exc:  # noqa: BLE001 — caller decides how to surface this
+        return False, str(exc)
+
+
+def webhook_test_payload():
+    return {
+        "event": "webhook_test",
+        "requestId": "",
+        "vendorName": "",
+        "fromStatus": "",
+        "toStatus": "",
+        "message": "Test from Vendor Onboarding configuration. This webhook is not registered yet.",
+        "sentAt": now_utc(),
+    }
+
+
 def push_status_change(payload):
     """Best-effort push to every registered webhook. Never fails the user-facing write.
 
@@ -246,28 +290,17 @@ def push_status_change(payload):
     targets = webhook_targets()
     if not targets:
         return "skipped"
-    body = json.dumps(payload).encode("utf-8")
     failed = False
     for target in targets:
-        req = urlrequest.Request(
-            target["url"],
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {target['key']}",
-            },
-        )
+        ok, detail = deliver_webhook(target["url"], target["key"], payload)
+        if ok:
+            continue
+        failed = True
         try:
-            with urlrequest.urlopen(req, timeout=5) as resp:
-                resp.read()
-        except Exception as exc:  # noqa: BLE001 — never fail the user-facing write
-            failed = True
-            try:
-                with open(os.path.join(APP_DIR, "app.log"), "a", encoding="utf-8") as log:
-                    log.write(f"[webhook] push failed for {target['url']}: {exc}\n")
-            except OSError:
-                pass
+            with open(os.path.join(APP_DIR, "app.log"), "a", encoding="utf-8") as log:
+                log.write(f"[webhook] push failed for {target['url']}: {detail}\n")
+        except OSError:
+            pass
     return "failed" if failed else "sent"
 
 
@@ -1245,21 +1278,34 @@ def _configuration_page(form=None, code=200):
     return body if code == 200 else (body, code)
 
 
+def _posted_webhook_form():
+    return {
+        "name": request.form.get("name", ""),
+        "url": request.form.get("url", ""),
+        "key": request.form.get("key", ""),
+    }
+
+
 @app.route("/configuration", methods=["GET", "POST"])
 def configuration():
     if request.method == "GET":
         return _configuration_page()
-    _row, err = save_webhook(
-        request.form.get("name", ""),
-        request.form.get("url", ""),
-        request.form.get("key", ""),
-    )
+    posted = _posted_webhook_form()
+    if request.form.get("action") == "test":
+        fields, err = _webhook_input(posted["name"], posted["url"], posted["key"])
+        if err:
+            flash(err, "error")
+            return _configuration_page(posted, 400)
+        ok, detail = deliver_webhook(fields["url"], fields["key"], webhook_test_payload())
+        if ok:
+            flash(f"Test webhook accepted (HTTP {detail}). It was not registered.", "ok")
+            return _configuration_page(posted)
+        flash(f"Test webhook failed ({detail}). It was not registered.", "error")
+        return _configuration_page(posted, 400)
+    _row, err = save_webhook(posted["name"], posted["url"], posted["key"])
     if err:
         flash(err, "error")
-        return _configuration_page(
-            {"name": request.form.get("name", ""), "url": request.form.get("url", "")},
-            400,
-        )
+        return _configuration_page({"name": posted["name"], "url": posted["url"], "key": ""}, 400)
     flash("Webhook registered.", "ok")
     return redirect(url_for("configuration"))
 

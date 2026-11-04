@@ -15,8 +15,12 @@
 <form method="post">
 <div class="field"><label>Name</label><input name="name" value="{{ form.name }}" placeholder="Ops status bot"></div>
 <div class="field"><label>URL</label><input name="url" type="url" required value="{{ form.url }}" placeholder="https://example.com/vendor-onboarding"></div>
-<div class="field"><label>Bearer key</label><input name="key" type="password" required autocomplete="off" placeholder="Sent as Authorization: Bearer"></div>
-<button class="btn">Add webhook</button>
+<div class="field"><label>Bearer key</label><input name="key" type="password" required autocomplete="off" placeholder="Sent as Authorization: Bearer" value="{{ form.key or '' }}"></div>
+<div class="actions">
+<button class="btn ghost" type="submit" name="action" value="test">Test webhook</button>
+<button class="btn" type="submit" name="action" value="add">Add webhook</button>
+</div>
+<p class="muted" style="margin:10px 0 0">Test sends a sample <span class="mono">webhook_test</span> event and does not register the webhook.</p>
 </form></div>
 <div class="card"><h2>Connect to the MCP server</h2>
 <p>The server name is <span class="mono">vendor-onboarding</span>. It speaks MCP over stdio and uses the same tracker as this app (<span class="mono">{{ store_dir }}</span>).</p>

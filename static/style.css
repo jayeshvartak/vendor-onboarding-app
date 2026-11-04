@@ -30,6 +30,7 @@ textarea{width:100%;min-height:70px}
 .field{margin-bottom:14px}.field input,.field select{width:100%}
 .btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer}
 .btn.ghost{background:#fff;color:var(--ink);border:1px solid #cfd5dc}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .flash{padding:10px 14px;border-radius:6px;margin-bottom:16px}.flash.ok{background:#e3f6e8;color:#1c5d31}.flash.error{background:#fde7ea;color:#8b1a28}
 dl{display:grid;grid-template-columns:170px 1fr;gap:6px 12px;margin:0}dt{color:var(--muted)}dd{margin:0;word-break:break-word}
 .stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}.stat{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:140px;color:inherit}
