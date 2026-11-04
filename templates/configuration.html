@@ -1,0 +1,31 @@
+{% extends "base.html" %}{% block body %}
+<h1>Configuration</h1><p class="sub">Webhooks that receive status changes, and how a Grok bot connects to this tracker.</p>
+<div class="card"><h2>Registered webhooks</h2>
+<p class="muted" style="margin:-6px 0 12px">Every status change is posted to each webhook. The request is still saved when a webhook cannot be reached. The environment webhook comes from <span class="mono">VO_STATUS_WEBHOOK_URL</span> and <span class="mono">VO_STATUS_WEBHOOK_KEY</span>.</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>URL</th><th>Key</th><th>Source</th><th></th></tr></thead><tbody>
+{% for hook in webhooks %}<tr>
+<td>{{ hook.name }}</td>
+<td class="mono">{{ hook.url }}</td>
+<td class="mono">{{ hook.key_mask }}</td>
+<td>{{ hook.source }}</td>
+<td>{% if hook.source == 'saved' %}<form method="post" action="{{ url_for('delete_configuration_webhook', webhook_id=hook.id) }}" style="margin:0"><button class="btn ghost" type="submit">Remove</button></form>{% else %}<span class="muted">—</span>{% endif %}</td>
+</tr>{% else %}<tr><td colspan="5" class="muted">No webhooks registered.</td></tr>{% endfor %}
+</tbody></table></div></div>
+<div class="card" style="max-width:640px"><h2>Add webhook</h2>
+<form method="post">
+<div class="field"><label>Name</label><input name="name" value="{{ form.name }}" placeholder="Ops status bot"></div>
+<div class="field"><label>URL</label><input name="url" type="url" required value="{{ form.url }}" placeholder="https://example.com/vendor-onboarding"></div>
+<div class="field"><label>Bearer key</label><input name="key" type="password" required autocomplete="off" placeholder="Sent as Authorization: Bearer"></div>
+<button class="btn">Add webhook</button>
+</form></div>
+<div class="card"><h2>Connect to the MCP server</h2>
+<p>The server name is <span class="mono">vendor-onboarding</span>. It speaks MCP over stdio and uses the same tracker as this app (<span class="mono">{{ store_dir }}</span>).</p>
+<p>Start it with:</p>
+<pre class="config mono">{{ mcp_command }}</pre>
+<p>Or add this to the MCP client configuration:</p>
+<pre class="config mono">{{ mcp_config }}</pre>
+<p>Every tool requires <span class="mono">requestor</span> and <span class="mono">requested_via</span>. <span class="mono">submit_onboarding_request</span> creates the request and completes Vendor Intake in that call.</p>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
+{% for name, about in mcp_tools %}<tr><td class="mono">{{ name }}</td><td>{{ about }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

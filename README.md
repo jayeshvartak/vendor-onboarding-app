@@ -19,16 +19,17 @@ Open http://127.0.0.1:8787 (health check: `/healthz`). Stop the app with `./stop
 
 ## Pages
 
-- `/` Dashboard: all requests, status, current actor, LEI, last updated; filter by status, actor, or search.
+- `/` Dashboard: all requests, status, current actor, LEI, last updated; filter by status, actor, or search. Summary cards use Awaiting Security Approval and Awaiting Manager Decision. With Vendor Intake is not a dashboard status.
 - `/new` New request: vendor legal name required; ID `VO-YYYYMMDD-NNN` (UTC); routed to Vendor Intake.
 - `/request/<id>` Detail: intake, research, notes, record a workflow action, per-request audit trail.
 - `/status` Status lookup by ID. `/audit` Full audit trail. `/workflow` Workflow diagram.
+- `/configuration` Registered webhooks, a form to add one, and how to connect the MCP server.
 
 ## Writes
 
 Writes take an exclusive `flock` on `.store.lock`, then write a temp file and `os.replace` (with an in-place fallback). New requests get `requestedBy: "LOB Requestor (web)"`, `currentActor: "Vendor Intake"`, `status: "With Vendor Intake"`, `manager: "Human - Manager"`, and UTC timestamps `YYYY-MM-DD HH:MM:SS UTC`.
 
-Optional status-change webhooks: copy `webhook.env.example` to `webhook.env` (gitignored) and set `VO_STATUS_WEBHOOK_URL` and `VO_STATUS_WEBHOOK_KEY`.
+Optional status-change webhooks: copy `webhook.env.example` to `webhook.env` (gitignored) and set `VO_STATUS_WEBHOOK_URL` and `VO_STATUS_WEBHOOK_KEY`, or register more on the Configuration page. Saved webhooks live in `webhooks.json` inside the store directory.
 
 The web form still creates a request, then completes Vendor Intake on a second submit. The MCP server below does both in one call.
 

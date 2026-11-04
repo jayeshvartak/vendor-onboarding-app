@@ -9,10 +9,12 @@ import io
 import json
 import os
 import re
+import secrets
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib import error as urlerror
+from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from flask import Flask, abort, flash, redirect, render_template, request, url_for
@@ -25,6 +27,7 @@ STORE_DIR = os.environ.get(
 JSON_PATH = os.path.join(STORE_DIR, "requests.json")
 CSV_PATH = os.path.join(STORE_DIR, "requests.csv")
 AUDIT_PATH = os.path.join(STORE_DIR, "audit-log.csv")
+WEBHOOKS_PATH = os.path.join(STORE_DIR, "webhooks.json")
 LOCK_PATH = os.path.join(APP_DIR, ".store.lock")
 
 REQ_COLS = [
@@ -102,34 +105,170 @@ def _load_webhook_cfg():
 _load_webhook_cfg()
 
 
-def push_status_change(payload):
-    """Best-effort push to the configured webhook bot. Never fails the user-facing write.
+def _read_saved_webhooks():
+    if not os.path.isfile(WEBHOOKS_PATH):
+        return []
+    try:
+        with open(WEBHOOKS_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = data.get("webhooks") if isinstance(data, dict) else None
+    return [row for row in rows or [] if isinstance(row, dict)]
 
-    Returns "sent", "skipped" (no URL or key), or "failed".
+
+def registered_webhooks():
+    """Environment webhook first, then webhooks saved from the Configuration page.
+
+    The same URL is listed once. Saved rows do not include the bearer key in this list;
+    `webhook_targets` is what the sender uses.
     """
-    if not WEBHOOK_URL or not WEBHOOK_KEY:
+    targets = webhook_targets()
+    public = []
+    for row in targets:
+        public.append({
+            "id": row["id"],
+            "name": row["name"],
+            "url": row["url"],
+            "key_mask": mask_secret(row["key"]),
+            "source": row["source"],
+            "createdAt": row.get("createdAt", ""),
+        })
+    return public
+
+
+def webhook_targets():
+    """Webhooks that receive status posts, including the bearer key."""
+    found = []
+    seen = set()
+
+    def add(row):
+        url = (row.get("url") or "").strip()
+        key = (row.get("key") or "").strip()
+        if not url or not key or url in seen:
+            return
+        seen.add(url)
+        found.append({
+            "id": row.get("id") or "environment",
+            "name": row.get("name") or "Webhook",
+            "url": url,
+            "key": key,
+            "source": row.get("source") or "saved",
+            "createdAt": row.get("createdAt") or "",
+        })
+
+    if WEBHOOK_URL and WEBHOOK_KEY:
+        add({
+            "id": "environment",
+            "name": "Environment",
+            "url": WEBHOOK_URL,
+            "key": WEBHOOK_KEY,
+            "source": "environment",
+        })
+    for row in _read_saved_webhooks():
+        add({
+            "id": row.get("id") or "",
+            "name": row.get("name") or "",
+            "url": row.get("url") or "",
+            "key": row.get("key") or "",
+            "source": "saved",
+            "createdAt": row.get("createdAt") or "",
+        })
+    return found
+
+
+def mask_secret(value):
+    text = value or ""
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "•" * len(text)
+    return "••••••••" + text[-4:]
+
+
+def _valid_webhook_url(url):
+    parts = urlparse.urlparse(url)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def save_webhook(name, url, key):
+    """Append one webhook. Returns (row, error)."""
+    name = _clean(name, 120)
+    url = _clean(url, 2000)
+    key = (key or "").strip()
+    if not url:
+        return None, "Webhook URL is required."
+    if not _valid_webhook_url(url):
+        return None, "Webhook URL must start with http:// or https://."
+    if not key:
+        return None, "Webhook bearer key is required."
+    if len(key) > 500:
+        return None, "Webhook bearer key is too long."
+    with store_lock():
+        rows = _read_saved_webhooks()
+        known = {(row.get("url") or "").strip() for row in rows}
+        known.update(row["url"] for row in webhook_targets())
+        if url in known:
+            return None, "That webhook URL is already registered."
+        if not name:
+            name = urlparse.urlparse(url).netloc or "Webhook"
+        row = {
+            "id": "wh-" + secrets.token_hex(4),
+            "name": name,
+            "url": url,
+            "key": key,
+            "createdAt": now_utc(),
+        }
+        rows.append(row)
+        _atomic_write(WEBHOOKS_PATH, json.dumps({"webhooks": rows}, indent=2) + "\n")
+    return row, None
+
+
+def delete_webhook(webhook_id):
+    webhook_id = _clean(webhook_id, 40)
+    if not webhook_id or webhook_id == "environment":
+        return False
+    with store_lock():
+        rows = _read_saved_webhooks()
+        kept = [row for row in rows if row.get("id") != webhook_id]
+        if len(kept) == len(rows):
+            return False
+        _atomic_write(WEBHOOKS_PATH, json.dumps({"webhooks": kept}, indent=2) + "\n")
+    return True
+
+
+def push_status_change(payload):
+    """Best-effort push to every registered webhook. Never fails the user-facing write.
+
+    Returns "sent" when every webhook accepts the post, "skipped" when none are
+    registered, or "failed" when any post fails.
+    """
+    targets = webhook_targets()
+    if not targets:
         return "skipped"
     body = json.dumps(payload).encode("utf-8")
-    req = urlrequest.Request(
-        WEBHOOK_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {WEBHOOK_KEY}",
-        },
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=5) as resp:
-            resp.read()
-    except Exception as exc:  # noqa: BLE001 — never fail the user-facing write
+    failed = False
+    for target in targets:
+        req = urlrequest.Request(
+            target["url"],
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {target['key']}",
+            },
+        )
         try:
-            with open(os.path.join(APP_DIR, "app.log"), "a", encoding="utf-8") as log:
-                log.write(f"[webhook] push failed: {exc}\n")
-        except OSError:
-            pass
-        return "failed"
-    return "sent"
+            with urlrequest.urlopen(req, timeout=5) as resp:
+                resp.read()
+        except Exception as exc:  # noqa: BLE001 — never fail the user-facing write
+            failed = True
+            try:
+                with open(os.path.join(APP_DIR, "app.log"), "a", encoding="utf-8") as log:
+                    log.write(f"[webhook] push failed for {target['url']}: {exc}\n")
+            except OSError:
+                pass
+    return "failed" if failed else "sent"
 
 
 
@@ -247,7 +386,60 @@ def status_class(s):
     return "intake"
 
 
-app.jinja_env.globals.update(status_class=status_class, store_dir=STORE_DIR)
+def dashboard_status_label(status):
+    """Dashboard names for the summary cards. Stored statuses are unchanged."""
+    text = status or ""
+    low = text.lower()
+    if low == "with vendor intake" or "awaiting security" in low:
+        return "Awaiting Security Approval"
+    if text == "Awaiting Manager Approval":
+        return "Awaiting Manager Decision"
+    return text
+
+
+# key, label, include the card even when the count is zero
+DASHBOARD_CARDS = (
+    ("awaiting-security-approval", "Awaiting Security Approval", True),
+    ("with-vendor-research", "With Vendor Research", False),
+    ("awaiting-ops-review", "Awaiting Ops Review", False),
+    ("awaiting-manager-decision", "Awaiting Manager Decision", True),
+    ("approved", "Approved", False),
+    ("rejected", "Rejected", False),
+)
+_DASHBOARD_LABELS = {key: label for key, label, _always in DASHBOARD_CARDS}
+
+
+def dashboard_cards(reqs):
+    grouped = {label: 0 for _key, label, _always in DASHBOARD_CARDS}
+    extras = {}
+    for record in reqs:
+        label = dashboard_status_label(record.get("status", ""))
+        if label in grouped:
+            grouped[label] += 1
+        elif label:
+            extras[label] = extras.get(label, 0) + 1
+    cards = []
+    for key, label, always in DASHBOARD_CARDS:
+        count = grouped[label]
+        if count or always:
+            cards.append({"key": key, "label": label, "count": count})
+    for label in sorted(extras):
+        cards.append({"key": label, "label": label, "count": extras[label]})
+    return cards
+
+
+def dashboard_matches(record, key):
+    if not key:
+        return True
+    label = _DASHBOARD_LABELS.get(key, key)
+    return dashboard_status_label(record.get("status", "")) == label
+
+
+app.jinja_env.globals.update(
+    status_class=status_class,
+    status_label=dashboard_status_label,
+    store_dir=STORE_DIR,
+)
 
 
 INTAKE_FIELDS = [
@@ -733,19 +925,16 @@ def render_detail(record, code=200, form=None):
 def dashboard():
     data = load()
     reqs = data["requests"]
-    statuses = sorted({r.get("status", "") for r in reqs if r.get("status")})
+    cards = dashboard_cards(reqs)
     actors = sorted({r.get("currentActor", "") for r in reqs if r.get("currentActor")})
     fs, fa, q = request.args.get("status", ""), request.args.get("actor", ""), request.args.get("q", "").strip()
     shown = [r for r in reqs
-             if (not fs or r.get("status") == fs)
+             if dashboard_matches(r, fs)
              and (not fa or r.get("currentActor") == fa)
              and (not q or q.lower() in (r.get("vendorName", "") + r.get("id", "")).lower())]
     shown = sorted(shown, key=lambda r: r.get("lastUpdated", ""), reverse=True)
-    counts = {}
-    for r in reqs:
-        counts[r.get("status", "")] = counts.get(r.get("status", ""), 0) + 1
-    return render_template("dashboard.html", reqs=shown, total=len(reqs), statuses=statuses,
-                           actors=actors, fs=fs, fa=fa, q=q, counts=counts, view="dashboard")
+    return render_template("dashboard.html", reqs=shown, total=len(reqs), cards=cards,
+                           actors=actors, fs=fs, fa=fa, q=q, view="dashboard")
 
 
 def _intake_payload(form):
@@ -1015,6 +1204,73 @@ def workflow():
         flow=None,
         stats=step_stats(data.get("requests", []), merged_audit()),
     )
+
+
+def mcp_client_config():
+    python = os.path.join(APP_DIR, ".venv", "bin", "python")
+    if not os.path.isfile(python):
+        python = "python"
+    return json.dumps({
+        "mcpServers": {
+            "vendor-onboarding": {
+                "command": python,
+                "args": [os.path.join(APP_DIR, "mcp_server.py")],
+                "env": {"VO_STORE_DIR": STORE_DIR},
+            }
+        }
+    }, indent=2)
+
+
+MCP_TOOLS = (
+    ("submit_onboarding_request", "Create the request and complete Vendor Intake together."),
+    ("record_vendor_research", "Save the LEI check and complete Vendor Research."),
+    ("record_ops_review", "Record Ops Review approval."),
+    ("record_security_approval", "Record Security Approval when the vendor touches customer data."),
+    ("record_manager_decision", "Record the manager approve or reject decision."),
+    ("get_onboarding_request", "Read the full request, steps, and audit."),
+    ("get_onboarding_status", "Read the current status and actor."),
+)
+
+
+def _configuration_page(form=None, code=200):
+    body = render_template(
+        "configuration.html",
+        view="configuration",
+        webhooks=registered_webhooks(),
+        form=form or {"name": "", "url": ""},
+        mcp_config=mcp_client_config(),
+        mcp_command=os.path.join(APP_DIR, ".venv", "bin", "python") + " " + os.path.join(APP_DIR, "mcp_server.py"),
+        mcp_tools=MCP_TOOLS,
+    )
+    return body if code == 200 else (body, code)
+
+
+@app.route("/configuration", methods=["GET", "POST"])
+def configuration():
+    if request.method == "GET":
+        return _configuration_page()
+    _row, err = save_webhook(
+        request.form.get("name", ""),
+        request.form.get("url", ""),
+        request.form.get("key", ""),
+    )
+    if err:
+        flash(err, "error")
+        return _configuration_page(
+            {"name": request.form.get("name", ""), "url": request.form.get("url", "")},
+            400,
+        )
+    flash("Webhook registered.", "ok")
+    return redirect(url_for("configuration"))
+
+
+@app.route("/configuration/webhooks/<webhook_id>/delete", methods=["POST"])
+def delete_configuration_webhook(webhook_id):
+    if delete_webhook(webhook_id):
+        flash("Webhook removed.", "ok")
+    else:
+        flash("That webhook is not a saved registration.", "error")
+    return redirect(url_for("configuration"))
 
 
 @app.route("/healthz")
