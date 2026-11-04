@@ -9,7 +9,7 @@
 {% macro node(key, x, y, w, l1, l2, human, st) -%}
 {% set state = st[key] if st else ('human' if human else 'static') %}
 <g class="n n-{{ state }}"><rect x="{{ x }}" y="{{ y }}" width="{{ w }}" height="58" rx="9"/>
-<text x="{{ x + w/2 }}" y="{{ y + (25 if l2 else 34) }}" text-anchor="middle" class="t1">{{ l1 }}</text>{% if st and state == "active" %}<text x="{{ x + w/2 }}" y="{{ y + 72 }}" text-anchor="middle" class="ip">IN PROGRESS</text>{% endif %}
+<text x="{{ x + w/2 }}" y="{{ y + (25 if l2 else 34) }}" text-anchor="middle" class="t1{{ ' long' if l1|length > 16 else '' }}">{{ l1 }}</text>{% if st and state == "active" %}<text x="{{ x + w/2 }}" y="{{ y + 72 }}" text-anchor="middle" class="ip">IN PROGRESS</text>{% endif %}
 {% if l2 %}<text x="{{ x + w/2 }}" y="{{ y + 43 }}" text-anchor="middle" class="t2">{{ l2 }}</text>{% endif %}
 {% if st %}{{ badge(x + w - 6, y + 6, state) }}{% endif %}</g>
 {%- endmacro %}
@@ -35,7 +35,7 @@
   <text x="356" y="50" text-anchor="middle">always</text>
 </g>
 {{ node('lob', 10, 30, 140, 'LOB Requestor', '(Human)', true, st) }}
-{{ node('intake', 190, 30, 140, 'Vendor Intake', '', false, st) }}
+{{ node('intake', 190, 30, 140, 'Vendor Intake form', '', false, st) }}
 {{ node('research', 390, 30, 140, 'Vendor Research', 'GLEIF / LEI', false, st) }}
 {{ node('ops', 570, 30, 156, 'Ops Review', '(Human)', true, st) }}
 {{ node('manager', 766, 30, 166, 'Manager Approval', '(Human)', true, st) }}
