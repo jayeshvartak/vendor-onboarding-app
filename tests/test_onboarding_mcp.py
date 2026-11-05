@@ -122,16 +122,25 @@ class OnboardingMcpTests(unittest.TestCase):
             rid, "335800NT9XZS4VC77O85", "ACTIVE", "ISSUED", "Riya", "grok",
             source="https://search.gleif.org", note="Exact name match")
         self.assertTrue(research["ok"], research)
-        self.assertEqual(research["status"], "Awaiting Ops Review")
+        self.assertEqual(research["status"], "Awaiting Ops Review + Awaiting Security")
+        self.assertEqual(research["currentActor"], "Human - Ops Review + Human - Security")
         self.assertEqual(research["lei"], "335800NT9XZS4VC77O85")
+        during = api.get_onboarding_request(rid, "Jayesh", "grok")
+        self.assertFalse(during["steps"]["security"][0].get("endedAt"))
+        self.assertFalse(during["steps"]["ops"][0].get("endedAt"))
+        self.assertFalse(during["steps"].get("manager"))
 
         ops = api.record_ops_review(rid, "Ops Person", "web")
         self.assertTrue(ops["ok"], ops)
-        self.assertEqual(ops["status"], "Awaiting Manager Approval")
+        self.assertEqual(ops["status"], "Awaiting Security")
+        self.assertEqual(ops["currentActor"], "Human - Security")
         self.assertEqual(ops["requestor"], "Ops Person")
+        after_ops = api.get_onboarding_request(rid, "Jayesh", "grok")
+        self.assertFalse(after_ops["steps"].get("manager"))
 
         security = api.record_security_approval(rid, "Sec Person", "slack")
         self.assertTrue(security["ok"], security)
+        self.assertEqual(security["status"], "Awaiting Manager Approval")
         self.assertEqual(security["currentActor"], "Human - Manager")
 
         decision = api.record_manager_decision(rid, "approve", "Manager", "email", note="Final yes")
@@ -196,27 +205,32 @@ class OnboardingMcpTests(unittest.TestCase):
         self.assertTrue(found["ok"], found)
         self.assertEqual(found["unit"], "hours")
         self.assertEqual(found["thresholdMinutes"], 60)
-        by_id = {row["requestId"]: row for row in found["vendors"]}
-        self.assertEqual(set(by_id), {
-            "VO-PEND-OPS", "VO-PEND-SEC", "VO-PEND-BOTH", "VO-PEND-MGR", "VO-PEND-LEGACY",
+        pairs = {(row["requestId"], row["stage"]) for row in found["vendors"]}
+        self.assertEqual(pairs, {
+            ("VO-PEND-OPS", "Ops Review"),
+            ("VO-PEND-SEC", "Security Approval"),
+            ("VO-PEND-SEC", "Vendor Research"),
+            ("VO-PEND-BOTH", "Security Approval"),
+            ("VO-PEND-BOTH", "Ops Review"),
+            ("VO-PEND-MGR", "Manager Decision"),
+            ("VO-PEND-LEGACY", "Ops Review"),
         })
-        self.assertEqual([item["stage"] for item in by_id["VO-PEND-BOTH"]["pending"]],
-                         ["Security Approval", "Ops Review"])
-        self.assertEqual(by_id["VO-PEND-SEC"]["pending"][0]["stage"], "Security Approval")
-        self.assertEqual(by_id["VO-PEND-SEC"]["pending"][0]["elapsed"], "2h")
-        self.assertEqual(by_id["VO-PEND-OPS"]["status"], "Awaiting Ops Review")
-        self.assertEqual(by_id["VO-PEND-MGR"]["pending"][0]["stage"], "Manager Decision")
-        self.assertEqual(by_id["VO-PEND-LEGACY"]["lei"], "LEGACYLEI")
-        self.assertEqual(by_id["VO-PEND-LEGACY"]["pending"][0]["pendingSince"], "2026-11-05 07:00:00 UTC")
-        self.assertGreater(by_id["VO-PEND-LEGACY"]["pending"][0]["elapsedMinutes"],
-                           by_id["VO-PEND-MGR"]["pending"][0]["elapsedMinutes"])
+        sec = [row for row in found["vendors"] if row["requestId"] == "VO-PEND-SEC"]
+        self.assertEqual({row["stage"] for row in sec}, {"Security Approval", "Vendor Research"})
+        self.assertTrue(all(row["elapsed"] == "2h" for row in sec))
+        self.assertEqual(sec[0]["requestId"], sec[1]["requestId"])
+        legacy = next(row for row in found["vendors"] if row["requestId"] == "VO-PEND-LEGACY")
+        self.assertEqual(legacy["lei"], "LEGACYLEI")
+        self.assertEqual(legacy["pendingSince"], "2026-11-05 07:00:00 UTC")
+        manager = next(row for row in found["vendors"] if row["requestId"] == "VO-PEND-MGR")
+        self.assertGreater(legacy["elapsedMinutes"], manager["elapsedMinutes"])
         self.assertEqual(found["vendors"][0]["requestId"], "VO-PEND-LEGACY")
 
         tighter = api.get_pending_requests(90, "minutes", "Jayesh", "grok", now=now)
-        tight_ids = {row["requestId"]: row for row in tighter["vendors"]}
-        self.assertNotIn("VO-PEND-MGR", tight_ids)
-        self.assertEqual([item["stage"] for item in tight_ids["VO-PEND-BOTH"]["pending"]],
-                         ["Security Approval"])
+        tight_pairs = {(row["requestId"], row["stage"]) for row in tighter["vendors"]}
+        self.assertNotIn(("VO-PEND-MGR", "Manager Decision"), tight_pairs)
+        self.assertIn(("VO-PEND-BOTH", "Security Approval"), tight_pairs)
+        self.assertNotIn(("VO-PEND-BOTH", "Ops Review"), tight_pairs)
         alias = api.get_pending_requests(1, "hour", "Jayesh", "grok", now=now)
         self.assertEqual(alias["count"], found["count"])
 

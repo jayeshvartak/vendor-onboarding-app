@@ -321,10 +321,12 @@ server = MCPServer(
     instructions=(
         "Vendor Master is the system of record for vendors. Submit one onboarding "
         "request to create the vendor record and complete Vendor Intake. Then record "
-        "research, ops review, security approval when the vendor touches customer data, "
-        "and the manager decision. Call get_pending_requests with an elapsed time in "
-        "minutes or hours to list vendors waiting on Ops Review, Security Approval, or "
-        "Manager Decision longer than that. Status changes are pushed to connected "
+        "research, ops review, and security approval when the vendor touches customer data. "
+        "Security Approval stays open beside Vendor Research and Ops Review. Record the "
+        "manager decision only after Ops Review is complete and Security Approval is "
+        "complete. Call get_pending_requests with an elapsed time in minutes or hours. "
+        "That call returns two records for one vendor when Security Approval is pending "
+        "beside Vendor Research or Ops Review. Status changes are pushed to connected "
         "clients as notifications/message. Every tool requires requestor and requested_via."
     ),
 )
@@ -456,11 +458,12 @@ def get_onboarding_status(
 
 
 @server.tool(description=(
-    "List vendors waiting on Ops Review, Security Approval, or Manager Decision for longer "
-    "than the elapsed time. Pass elapsed as a number and unit as minutes or hours. "
-    "The wait is measured from when that stage opened. A vendor waiting on more than one "
-    "of these stages includes each stage that is over the elapsed time. "
-    "Requires requestor and requested_via. Does not change any request."
+    "List vendors waiting on Vendor Research, Ops Review, Security Approval, or Manager "
+    "Decision for longer than the elapsed time. Pass elapsed as a number and unit as "
+    "minutes or hours. The wait is measured from when that stage opened. When Security "
+    "Approval is still open beside Vendor Research or Ops Review, the same vendor is "
+    "returned twice, once for each stage. Requires requestor and requested_via. "
+    "Does not change any request."
 ))
 def get_pending_requests(
     elapsed: Annotated[float, Field(description="Amount of time the vendor has been waiting. Only longer waits are returned.")],

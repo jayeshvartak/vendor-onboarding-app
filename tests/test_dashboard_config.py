@@ -87,7 +87,13 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertIn('href="?status=awaiting-manager-decision"><b>1</b>', html)
         self.assertIn('href="?status=awaiting-ops-review"><b>1</b>', html)
         self.assertIn('href="?status=approved"><b>1</b>', html)
-        self.assertNotIn("with-vendor-research", html)
+        self.assertIn('href="?status=with-vendor-research"><b>1</b>', html)
+
+        research = self.client.get("/?status=with-vendor-research")
+        body = research.get_data(as_text=True)
+        self.assertIn("Security Co", body)
+        self.assertNotIn("Intake Co", body)
+        self.assertNotIn("Ops Co", body)
 
         security = self.client.get("/?status=awaiting-security-approval")
         body = security.get_data(as_text=True)

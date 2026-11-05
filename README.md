@@ -65,4 +65,4 @@ Every MCP request must include `Authorization: Bearer <token>`. The Configuratio
 - `record_manager_decision` — final `approve` or `reject`.
 - `get_onboarding_request` — full record, including intake, research, step timing, and audit.
 - `get_onboarding_status` — status, current actor, and last updated time.
-- `get_pending_requests` — vendors waiting on Ops Review, Security Approval, or Manager Decision for longer than an elapsed time in minutes or hours. The wait starts when that stage opens. A vendor in more than one of those stages lists each stage that is over the elapsed time.
+- `get_pending_requests` — vendors waiting on Vendor Research, Ops Review, Security Approval, or Manager Decision for longer than an elapsed time in minutes or hours. The wait starts when that stage opens. When Security Approval is still open beside Vendor Research or Ops Review, the same vendor is returned once for each stage. Manager Approval opens only after Ops Review is complete and, when the vendor touches customer data, Security Approval is complete.

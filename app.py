@@ -64,13 +64,13 @@ TRANSITIONS = {
                       details="touches_customer_data=yes; routed to Vendor Research and Human - Security"),
     "research_done": dict(label="Research complete → Ops Review", actor="Vendor Research",
                           next_actor="Human - Ops Review", status="Awaiting Ops Review",
-                          details="Research complete; routed to Human - Ops Review"),
-    "ops_approved": dict(label="Ops Review approved → Manager", actor="Human - Ops Review",
+                          details="Research complete; routed to Human - Ops Review. Security Approval stays open when the vendor touches customer data"),
+    "ops_approved": dict(label="Ops Review approved", actor="Human - Ops Review",
                          next_actor="Human - Manager", status="Awaiting Manager Approval",
-                         details="Ops Review approved; routed to Human - Manager"),
-    "security_approved": dict(label="Security approved → Manager", actor="Human - Security",
+                         details="Ops Review approved. Manager Approval opens once Security Approval is also complete"),
+    "security_approved": dict(label="Security approved", actor="Human - Security",
                               next_actor="Human - Manager", status="Awaiting Manager Approval",
-                              details="Security approved; routed to Human - Manager (per workflow rule)"),
+                              details="Security approved. Manager Approval opens once Ops Review is also complete"),
     "manager_approved": dict(label="Manager final APPROVE", actor="Human - Manager",
                              next_actor="—", status="Approved",
                              details="Final approval by Human - Manager"),
@@ -449,15 +449,31 @@ def status_class(s):
     return "intake"
 
 
-def dashboard_status_label(status):
-    """Dashboard names for the summary cards. Stored statuses are unchanged."""
+def dashboard_status_labels(status):
+    """Every dashboard name contained in a stored status. Parallel work counts on each card."""
     text = status or ""
     low = text.lower()
+    labels = []
+    if "with vendor research" in low:
+        labels.append("With Vendor Research")
+    if "awaiting ops review" in low:
+        labels.append("Awaiting Ops Review")
     if low == "with vendor intake" or "awaiting security" in low:
-        return "Awaiting Security Approval"
-    if text == "Awaiting Manager Approval":
-        return "Awaiting Manager Decision"
-    return text
+        labels.append("Awaiting Security Approval")
+    if low == "awaiting manager approval":
+        labels.append("Awaiting Manager Decision")
+    if low == "approved":
+        labels.append("Approved")
+    if low == "rejected":
+        labels.append("Rejected")
+    if not labels and text:
+        labels.append(text)
+    return labels
+
+
+def dashboard_status_label(status):
+    """Dashboard name for one status. A parallel status keeps each part."""
+    return " + ".join(dashboard_status_labels(status))
 
 
 # key, label, include the card even when the count is zero
@@ -476,11 +492,11 @@ def dashboard_cards(reqs):
     grouped = {label: 0 for _key, label, _always in DASHBOARD_CARDS}
     extras = {}
     for record in reqs:
-        label = dashboard_status_label(record.get("status", ""))
-        if label in grouped:
-            grouped[label] += 1
-        elif label:
-            extras[label] = extras.get(label, 0) + 1
+        for label in dashboard_status_labels(record.get("status", "")):
+            if label in grouped:
+                grouped[label] += 1
+            elif label:
+                extras[label] = extras.get(label, 0) + 1
     cards = []
     for key, label, always in DASHBOARD_CARDS:
         count = grouped[label]
@@ -495,7 +511,7 @@ def dashboard_matches(record, key):
     if not key:
         return True
     label = _DASHBOARD_LABELS.get(key, key)
-    return dashboard_status_label(record.get("status", "")) == label
+    return label in dashboard_status_labels(record.get("status", ""))
 
 
 app.jinja_env.globals.update(
@@ -765,6 +781,66 @@ def ensure_steps(record, audit_rows):
     record["steps"] = derive_steps_from_audit(audit_rows)
 
 
+def _step_runs(record, key):
+    steps = record.get("steps") or {}
+    runs = steps.get(key) or []
+    if isinstance(runs, dict):
+        runs = [runs]
+    return [run for run in runs if isinstance(run, dict)]
+
+
+def step_is_open(record, key):
+    runs = _step_runs(record, key)
+    return bool(runs) and not runs[-1].get("endedAt")
+
+
+def step_is_done(record, key):
+    runs = _step_runs(record, key)
+    return bool(runs) and bool(runs[-1].get("endedAt"))
+
+
+def security_is_required(record):
+    """Security Approval runs beside research and ops review when customer data is touched."""
+    if record.get("touchesCustomerData") is True:
+        return True
+    if record.get("touchesCustomerData") is False:
+        return False
+    return step_is_open(record, "security") or step_is_done(record, "security")
+
+
+def parallel_destination(record):
+    """Status while Security Approval runs beside Vendor Research or Ops Review.
+
+    Manager Approval opens only after research, ops review, and any required
+    security approval are all complete.
+    """
+    parts = []
+    if step_is_open(record, "research"):
+        parts.append(("With Vendor Research", "Vendor Research"))
+    elif step_is_open(record, "ops"):
+        parts.append(("Awaiting Ops Review", "Human - Ops Review"))
+    security_done = step_is_done(record, "security") or bool(record.get("securityApproved"))
+    if security_is_required(record) and not security_done:
+        parts.append(("Awaiting Security", "Human - Security"))
+    if parts:
+        return " + ".join(part[0] for part in parts), " + ".join(part[1] for part in parts), False
+    research_done = step_is_done(record, "research") or bool(record.get("researchComplete"))
+    ops_done = step_is_done(record, "ops") or bool(record.get("opsApproved"))
+    if research_done and ops_done and (not security_is_required(record) or security_done):
+        return "Awaiting Manager Approval", "Human - Manager", True
+    return record.get("status") or "", record.get("currentActor") or "", False
+
+
+def settle_parallel_route(record, ts):
+    """Write the parallel status and open Manager Approval when both gates are done."""
+    status, actor, open_manager = parallel_destination(record)
+    record["status"] = status
+    record["currentActor"] = actor
+    if open_manager:
+        open_step(record, "manager", ts)
+    return status, actor
+
+
 def record_step_transition(record, key, ts, requestor, requested_via):
     """Open and close steps for a workflow action recorded in this app."""
     if key in ("intake_no_cd", "intake_cd"):
@@ -777,12 +853,13 @@ def record_step_transition(record, key, ts, requestor, requested_via):
     elif key == "research_done":
         close_step(record, "research", ts, requestor, requested_via)
         open_step(record, "ops", ts)
+        settle_parallel_route(record, ts)
     elif key == "security_approved":
         close_step(record, "security", ts, requestor, requested_via)
-        open_step(record, "manager", ts)
+        settle_parallel_route(record, ts)
     elif key == "ops_approved":
         close_step(record, "ops", ts, requestor, requested_via)
-        open_step(record, "manager", ts)
+        settle_parallel_route(record, ts)
     elif key in ("manager_approved", "manager_rejected"):
         close_step(record, "manager", ts, requestor, requested_via)
 
@@ -1204,7 +1281,7 @@ def action(rid):
         record_step_transition(r, key, ts, requestor, requested_via)
         audit = {
             "timestamp": ts, "requestId": rid, "actor": f"{requestor} ({requested_via})",
-            "action": t["label"], "fromStatus": frm, "toStatus": t["status"],
+            "action": t["label"], "fromStatus": frm, "toStatus": r.get("status", ""),
             "details": (
                 f"{t['details']}. requestor={requestor}; requested_via={requested_via}"
                 + (f". Note: {note}" if note else "")
@@ -1216,7 +1293,7 @@ def action(rid):
         vendor = r.get("vendorName", "")
         notes = r.get("notes", "")
         actor = r.get("currentActor", "")
-        to_status = t["status"]
+        to_status = r.get("status", "")
         step_name = {
             "research_done": "research",
             "security_approved": "security",
@@ -1295,7 +1372,7 @@ MCP_TOOLS = (
     ("record_manager_decision", "Record the manager approve or reject decision."),
     ("get_onboarding_request", "Read the full request, steps, and audit."),
     ("get_onboarding_status", "Read the current status and actor."),
-    ("get_pending_requests", "List vendors waiting on Ops Review, Security Approval, or Manager Decision longer than an elapsed time."),
+    ("get_pending_requests", "List vendors waiting longer than an elapsed time. Security beside research or ops review returns two records."),
 )
 
 

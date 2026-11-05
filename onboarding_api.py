@@ -12,6 +12,7 @@ import app as vo
 
 # Stages a caller can ask about. The wait starts when that step opens.
 PENDING_STAGES = (
+    ("research", "Vendor Research", "with vendor research"),
     ("ops", "Ops Review", "awaiting ops review"),
     ("security", "Security Approval", "awaiting security"),
     ("manager", "Manager Decision", "awaiting manager approval"),
@@ -114,7 +115,7 @@ def _apply(data, record, key, requestor, requested_via, note=""):
         "actor": f"{requestor} ({requested_via})",
         "action": transition["label"],
         "fromStatus": previous,
-        "toStatus": transition["status"],
+        "toStatus": record.get("status", ""),
         "details": (
             f"{transition['details']}. requestor={requestor}; requested_via={requested_via}"
             + (f". Note: {note}" if note else "")
@@ -288,7 +289,7 @@ def record_vendor_research(
         vendor = record.get("vendorName", "")
         notes = record.get("notes", "")
         actor = record.get("currentActor", "")
-        to_status = transition["status"]
+        to_status = record.get("status", "")
         rid = record["id"]
     webhook = vo.push_status_change({
         "event": "status_changed",
@@ -339,7 +340,7 @@ def _complete(request_id, key, requestor, requested_via, note, step, extra_check
         vendor = record.get("vendorName", "")
         notes = record.get("notes", "")
         actor = record.get("currentActor", "")
-        to_status = transition["status"]
+        to_status = record.get("status", "")
         rid = record["id"]
         label = transition["label"]
     webhook = vo.push_status_change({
@@ -447,7 +448,7 @@ def _status_says(record, marker):
 
 
 def _pending_stages(record, audit):
-    """Open Ops, Security, or Manager steps. Status is the fallback when that step was never timed."""
+    """Open research, ops, security, or manager steps. Status is the fallback when that step was never timed."""
     steps = vo.resolved_steps(record, audit)
     hits = []
     for key, label, marker in PENDING_STAGES:
@@ -464,7 +465,8 @@ def _pending_stages(record, audit):
 
 
 def _vendor_pending(record, audit, current, threshold_minutes):
-    pending = []
+    """One record per open stage. Security beside research or ops review is two records."""
+    rows = []
     for label, started in _pending_stages(record, audit):
         start = vo.parse_ts(started)
         if start is None:
@@ -472,33 +474,28 @@ def _vendor_pending(record, audit, current, threshold_minutes):
         seconds = (current - start).total_seconds()
         if seconds <= threshold_minutes * 60:
             continue
-        pending.append({
+        rows.append({
+            "requestId": record.get("id"),
+            "vendorName": record.get("vendorName", ""),
+            "status": record.get("status", ""),
+            "currentActor": record.get("currentActor", ""),
+            "touchesCustomerData": record.get("touchesCustomerData"),
+            "lei": record.get("lei") or "",
+            "entityStatus": record.get("entityStatus") or "",
+            "registrationStatus": record.get("registrationStatus") or "",
+            "vendorContact": record.get("vendorContact") or "",
+            "requestedBy": record.get("requestedBy") or "",
+            "lastUpdated": record.get("lastUpdated") or "",
             "stage": label,
             "pendingSince": started,
             "elapsedMinutes": round(seconds / 60, 1),
             "elapsed": vo.fmt_duration(seconds),
         })
-    pending.sort(key=lambda item: item["elapsedMinutes"], reverse=True)
-    if not pending:
-        return None
-    return {
-        "requestId": record.get("id"),
-        "vendorName": record.get("vendorName", ""),
-        "status": record.get("status", ""),
-        "currentActor": record.get("currentActor", ""),
-        "touchesCustomerData": record.get("touchesCustomerData"),
-        "lei": record.get("lei") or "",
-        "entityStatus": record.get("entityStatus") or "",
-        "registrationStatus": record.get("registrationStatus") or "",
-        "vendorContact": record.get("vendorContact") or "",
-        "requestedBy": record.get("requestedBy") or "",
-        "lastUpdated": record.get("lastUpdated") or "",
-        "pending": pending,
-    }
+    return rows
 
 
 def get_pending_requests(elapsed, unit, requestor, requested_via, now=None):
-    """Vendors waiting on Ops Review, Security Approval, or Manager Decision longer than elapsed."""
+    """Vendors waiting longer than elapsed. Security beside research or ops review returns two records."""
     who, err = _actor(requestor, requested_via)
     if err:
         return err
@@ -515,10 +512,8 @@ def get_pending_requests(elapsed, unit, requestor, requested_via, now=None):
     vendors = []
     for record in data.get("requests", []):
         audit = vo.merged_audit(record.get("id"))
-        detail = _vendor_pending(record, audit, current, threshold_minutes)
-        if detail:
-            vendors.append(detail)
-    vendors.sort(key=lambda item: item["pending"][0]["elapsedMinutes"], reverse=True)
+        vendors.extend(_vendor_pending(record, audit, current, threshold_minutes))
+    vendors.sort(key=lambda item: (-item["elapsedMinutes"], item.get("requestId") or "", item.get("stage") or ""))
     return {
         "ok": True,
         "elapsed": amount,

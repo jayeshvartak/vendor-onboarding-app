@@ -51,7 +51,7 @@
 <div><label>Requestor</label><input name="requestor" placeholder="Who is completing this step"></div>
 <div><label>Requested via</label><input name="requested_via" value="web"></div>
 <div style="flex:1"><label>Note (optional)</label><input name="note" style="width:100%"></div><button class="btn">Record</button></form>
-<p class="muted" style="margin:6px 0 0;font-size:12px">Security approval routes to Human - Manager; Research routes to Human - Ops Review → Manager.</p></div>
+<p class="muted" style="margin:6px 0 0;font-size:12px">When the vendor touches customer data, Security Approval stays open beside Vendor Research and Ops Review. Manager Approval opens after both Ops Review and Security Approval are complete.</p></div>
 <div class="card"><h2>Audit trail</h2><table><thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>From → To</th><th>Details</th></tr></thead><tbody>
 {% for a in audit|reverse %}<tr><td class="mono">{{ a.timestamp }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.fromStatus or '—' }} → {{ a.toStatus or '—' }}</td><td>{{ a.details }}</td></tr>
 {% else %}<tr><td colspan="5" class="muted">No audit entries.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
