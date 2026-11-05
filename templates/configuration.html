@@ -30,6 +30,17 @@
 <pre class="config mono">{{ mcp_token }}</pre>
 <p>MCP client configuration:</p>
 <pre class="config mono">{{ mcp_config }}</pre>
+<h2>Connected MCP clients</h2>
+<p class="muted" style="margin:-6px 0 12px">A client stays on this list while its MCP session is open. Each status change is sent to these clients as <span class="mono">notifications/message</span> on that stream. The vendor record is still saved when no client is listening.</p>
+<div class="table-wrap"><table><thead><tr><th>Client</th><th>Version</th><th>Address</th><th>Connected</th><th>Session</th></tr></thead><tbody>
+{% for client in mcp_clients %}<tr>
+<td>{{ client.name }}</td>
+<td class="mono">{{ client.version or "—" }}</td>
+<td class="mono">{{ client.remote or "—" }}</td>
+<td class="mono">{{ client.connectedAt or "—" }}</td>
+<td class="mono">{{ client.sessionId }}</td>
+</tr>{% else %}<tr><td colspan="5" class="muted">No MCP clients are connected.</td></tr>{% endfor %}
+</tbody></table></div>
 <p>Every tool requires <span class="mono">requestor</span> and <span class="mono">requested_via</span>. <span class="mono">submit_onboarding_request</span> creates the request and completes Vendor Intake in that call.</p>
 <table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
 {% for name, about in mcp_tools %}<tr><td class="mono">{{ name }}</td><td>{{ about }}</td></tr>{% endfor %}

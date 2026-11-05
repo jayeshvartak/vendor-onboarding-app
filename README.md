@@ -43,7 +43,7 @@ http://127.0.0.1:8788/mcp
 
 Server name: `vendor-master`. It reads and writes the same `VO_STORE_DIR` tracker as the web app. Every tool requires `requestor` and `requested_via`. There is no separate create-request tool.
 
-Every MCP request must include `Authorization: Bearer <token>`. The Configuration page shows the token in use.
+Every MCP request must include `Authorization: Bearer <token>`. The Configuration page shows the token in use, lists MCP clients with an open session, and sends each status change to those clients as `notifications/message`.
 
 ```json
 {

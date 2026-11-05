@@ -290,11 +290,17 @@ def webhook_test_payload():
 
 
 def push_status_change(payload):
-    """Best-effort push to every registered webhook. Never fails the user-facing write.
+    """Best-effort push to every registered webhook and connected MCP client.
 
     Returns "sent" when every webhook accepts the post, "skipped" when none are
-    registered, or "failed" when any post fails.
+    registered, or "failed" when any post fails. MCP delivery does not change
+    that result and never fails the user-facing write.
     """
+    try:
+        import mcp_server
+        mcp_server.publish_status(payload)
+    except Exception:
+        pass
     targets = webhook_targets()
     if not targets:
         return "skipped"
@@ -1303,6 +1309,7 @@ def _configuration_page(form=None, code=200):
         mcp_config=mcp_client_config(),
         mcp_url=mcp_endpoint(),
         mcp_token=mcp_server.mcp_token(),
+        mcp_clients=mcp_server.connected_clients(),
         mcp_tools=MCP_TOOLS,
     )
     return body if code == 200 else (body, code)

@@ -65,6 +65,19 @@ class StreamableHttpTests(unittest.TestCase):
         self.assertEqual(mcp_server.client_url(), f"http://127.0.0.1:{PORT}/mcp")
         self.assertEqual(mcp_server.mcp_token(), "2026-str-mcp")
 
+    def test_connected_client_is_listed_and_receives_status(self):
+        clients, events = asyncio.run(_watch_status())
+        self.assertEqual([row["name"] for row in clients], ["config-bot"])
+        self.assertEqual(clients[0]["version"], "9")
+        self.assertEqual(clients[0]["remote"], "127.0.0.1")
+        self.assertEqual(len(clients[0]["sessionId"]), 32)
+        self.assertEqual(events, [{
+            "event": "status_changed",
+            "requestId": "VO-WATCH",
+            "toStatus": "Awaiting Ops Review",
+        }])
+        self.assertEqual(mcp_server.connected_clients(), [])
+
 
 def _initialize(token):
     headers = {
@@ -84,6 +97,51 @@ def _initialize(token):
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
+
+
+async def _watch_status():
+    import anyio
+    import httpx2
+    from mcp import ClientSession, types
+    from mcp.client.streamable_http import streamable_http_client
+
+    events = []
+
+    async def on_log(params):
+        events.append(params.data)
+
+    headers = {"Authorization": f"Bearer {mcp_server.mcp_token()}"}
+    async with httpx2.AsyncClient(headers=headers) as http:
+        async with streamable_http_client(mcp_server.client_url(), http_client=http) as (read, write):
+            async with ClientSession(
+                read,
+                write,
+                client_info=types.Implementation(name="config-bot", version="9"),
+                logging_callback=on_log,
+            ) as session:
+                await session.initialize()
+                await session.list_tools()
+                deadline = 0
+                while deadline < 20 and not any(
+                    row["name"] == "config-bot" for row in mcp_server.connected_clients()
+                ):
+                    deadline += 1
+                    await anyio.sleep(0.05)
+                clients = mcp_server.connected_clients()
+                mcp_server.publish_status({
+                    "event": "status_changed",
+                    "requestId": "VO-WATCH",
+                    "toStatus": "Awaiting Ops Review",
+                })
+                deadline = 0
+                while deadline < 40 and not events:
+                    deadline += 1
+                    await anyio.sleep(0.05)
+    deadline = 0
+    while deadline < 30 and mcp_server.connected_clients():
+        deadline += 1
+        await anyio.sleep(0.05)
+    return clients, events
 
 
 async def _connect():

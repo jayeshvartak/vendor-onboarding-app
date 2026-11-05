@@ -121,6 +121,9 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertIn("requestor", html)
         self.assertIn("requested_via", html)
         self.assertIn("submit_onboarding_request", html)
+        self.assertIn("Connected MCP clients", html)
+        self.assertIn("No MCP clients are connected.", html)
+        self.assertIn("notifications/message", html)
 
         bad = self.client.post("/configuration", data={"name": "Nope", "url": "ftp://files.example", "key": "k"})
         self.assertEqual(bad.status_code, 400)
