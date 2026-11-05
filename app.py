@@ -1,21 +1,31 @@
-"""Vendor Onboarding — local internal web app.
+"""Vendor Master — system of record for vendors.
 
 Source of truth: the tracker store (requests.json primary; requests.csv and
 audit-log.csv kept in sync). Override with VO_STORE_DIR.
 """
 import csv
-import fcntl
 import io
 import json
 import os
 import re
+import secrets
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib import error as urlerror
+from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from flask import Flask, abort, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_DIR = os.environ.get(
@@ -25,6 +35,7 @@ STORE_DIR = os.environ.get(
 JSON_PATH = os.path.join(STORE_DIR, "requests.json")
 CSV_PATH = os.path.join(STORE_DIR, "requests.csv")
 AUDIT_PATH = os.path.join(STORE_DIR, "audit-log.csv")
+WEBHOOKS_PATH = os.path.join(STORE_DIR, "webhooks.json")
 LOCK_PATH = os.path.join(APP_DIR, ".store.lock")
 
 REQ_COLS = [
@@ -53,13 +64,13 @@ TRANSITIONS = {
                       details="touches_customer_data=yes; routed to Vendor Research and Human - Security"),
     "research_done": dict(label="Research complete → Ops Review", actor="Vendor Research",
                           next_actor="Human - Ops Review", status="Awaiting Ops Review",
-                          details="Research complete; routed to Human - Ops Review"),
-    "ops_approved": dict(label="Ops Review approved → Manager", actor="Human - Ops Review",
+                          details="Research complete; routed to Human - Ops Review. Security Approval stays open when the vendor touches customer data"),
+    "ops_approved": dict(label="Ops Review approved", actor="Human - Ops Review",
                          next_actor="Human - Manager", status="Awaiting Manager Approval",
-                         details="Ops Review approved; routed to Human - Manager"),
-    "security_approved": dict(label="Security approved → Manager", actor="Human - Security",
+                         details="Ops Review approved. Manager Approval opens once Security Approval is also complete"),
+    "security_approved": dict(label="Security approved", actor="Human - Security",
                               next_actor="Human - Manager", status="Awaiting Manager Approval",
-                              details="Security approved; routed to Human - Manager (per workflow rule)"),
+                              details="Security approved. Manager Approval opens once Ops Review is also complete"),
     "manager_approved": dict(label="Manager final APPROVE", actor="Human - Manager",
                              next_actor="—", status="Approved",
                              details="Final approval by Human - Manager"),
@@ -102,29 +113,209 @@ def _load_webhook_cfg():
 _load_webhook_cfg()
 
 
-def push_status_change(payload):
-    """Best-effort real-time push to the Grok Bot webhook routine. Never blocks the request."""
-    if not WEBHOOK_URL or not WEBHOOK_KEY:
-        return
+def _read_saved_webhooks():
+    if not os.path.isfile(WEBHOOKS_PATH):
+        return []
+    try:
+        with open(WEBHOOKS_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows = data.get("webhooks") if isinstance(data, dict) else None
+    return [row for row in rows or [] if isinstance(row, dict)]
+
+
+def registered_webhooks():
+    """Environment webhook first, then webhooks saved from the Configuration page.
+
+    The same URL is listed once. Saved rows do not include the bearer key in this list;
+    `webhook_targets` is what the sender uses.
+    """
+    targets = webhook_targets()
+    public = []
+    for row in targets:
+        public.append({
+            "id": row["id"],
+            "name": row["name"],
+            "url": row["url"],
+            "key_mask": mask_secret(row["key"]),
+            "source": row["source"],
+            "createdAt": row.get("createdAt", ""),
+        })
+    return public
+
+
+def webhook_targets():
+    """Webhooks that receive status posts, including the bearer key."""
+    found = []
+    seen = set()
+
+    def add(row):
+        url = (row.get("url") or "").strip()
+        key = (row.get("key") or "").strip()
+        if not url or not key or url in seen:
+            return
+        seen.add(url)
+        found.append({
+            "id": row.get("id") or "environment",
+            "name": row.get("name") or "Webhook",
+            "url": url,
+            "key": key,
+            "source": row.get("source") or "saved",
+            "createdAt": row.get("createdAt") or "",
+        })
+
+    if WEBHOOK_URL and WEBHOOK_KEY:
+        add({
+            "id": "environment",
+            "name": "Environment",
+            "url": WEBHOOK_URL,
+            "key": WEBHOOK_KEY,
+            "source": "environment",
+        })
+    for row in _read_saved_webhooks():
+        add({
+            "id": row.get("id") or "",
+            "name": row.get("name") or "",
+            "url": row.get("url") or "",
+            "key": row.get("key") or "",
+            "source": "saved",
+            "createdAt": row.get("createdAt") or "",
+        })
+    return found
+
+
+def mask_secret(value):
+    text = value or ""
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "•" * len(text)
+    return "••••••••" + text[-4:]
+
+
+def _valid_webhook_url(url):
+    parts = urlparse.urlparse(url)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def _webhook_input(name, url, key):
+    name = _clean(name, 120)
+    url = _clean(url, 2000)
+    key = (key or "").strip()
+    if not url:
+        return None, "Webhook URL is required."
+    if not _valid_webhook_url(url):
+        return None, "Webhook URL must start with http:// or https://."
+    if not key:
+        return None, "Webhook bearer key is required."
+    if len(key) > 500:
+        return None, "Webhook bearer key is too long."
+    return {"name": name, "url": url, "key": key}, None
+
+
+def save_webhook(name, url, key):
+    """Append one webhook. Returns (row, error)."""
+    fields, err = _webhook_input(name, url, key)
+    if err:
+        return None, err
+    name, url, key = fields["name"], fields["url"], fields["key"]
+    with store_lock():
+        rows = _read_saved_webhooks()
+        known = {(row.get("url") or "").strip() for row in rows}
+        known.update(row["url"] for row in webhook_targets())
+        if url in known:
+            return None, "That webhook URL is already registered."
+        if not name:
+            name = urlparse.urlparse(url).netloc or "Webhook"
+        row = {
+            "id": "wh-" + secrets.token_hex(4),
+            "name": name,
+            "url": url,
+            "key": key,
+            "createdAt": now_utc(),
+        }
+        rows.append(row)
+        _atomic_write(WEBHOOKS_PATH, json.dumps({"webhooks": rows}, indent=2) + "\n")
+    return row, None
+
+
+def delete_webhook(webhook_id):
+    webhook_id = _clean(webhook_id, 40)
+    if not webhook_id or webhook_id == "environment":
+        return False
+    with store_lock():
+        rows = _read_saved_webhooks()
+        kept = [row for row in rows if row.get("id") != webhook_id]
+        if len(kept) == len(rows):
+            return False
+        _atomic_write(WEBHOOKS_PATH, json.dumps({"webhooks": kept}, indent=2) + "\n")
+    return True
+
+
+def deliver_webhook(url, key, payload):
+    """POST one payload. Returns (ok, detail) where detail is the HTTP status or the error."""
     body = json.dumps(payload).encode("utf-8")
     req = urlrequest.Request(
-        WEBHOOK_URL,
+        url,
         data=body,
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {WEBHOOK_KEY}",
+            "Authorization": f"Bearer {key}",
         },
     )
     try:
         with urlrequest.urlopen(req, timeout=5) as resp:
             resp.read()
-    except Exception as exc:  # noqa: BLE001 — never fail the user-facing write
+            return True, resp.status
+    except urlerror.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except urlerror.URLError as exc:
+        return False, str(getattr(exc, "reason", exc))
+    except Exception as exc:  # noqa: BLE001 — caller decides how to surface this
+        return False, str(exc)
+
+
+def webhook_test_payload():
+    return {
+        "event": "webhook_test",
+        "requestId": "",
+        "vendorName": "",
+        "fromStatus": "",
+        "toStatus": "",
+        "message": "Test from Vendor Master configuration. This webhook is not registered yet.",
+        "sentAt": now_utc(),
+    }
+
+
+def push_status_change(payload):
+    """Best-effort push to every registered webhook and connected MCP client.
+
+    Returns "sent" when every webhook accepts the post, "skipped" when none are
+    registered, or "failed" when any post fails. MCP delivery does not change
+    that result and never fails the user-facing write.
+    """
+    try:
+        import mcp_server
+        mcp_server.publish_status(payload)
+    except Exception:
+        pass
+    targets = webhook_targets()
+    if not targets:
+        return "skipped"
+    failed = False
+    for target in targets:
+        ok, detail = deliver_webhook(target["url"], target["key"], payload)
+        if ok:
+            continue
+        failed = True
         try:
             with open(os.path.join(APP_DIR, "app.log"), "a", encoding="utf-8") as log:
-                log.write(f"[webhook] push failed: {exc}\n")
+                log.write(f"[webhook] push failed for {target['url']}: {detail}\n")
         except OSError:
             pass
+    return "failed" if failed else "sent"
 
 
 
@@ -134,12 +325,25 @@ def now_utc():
 
 @contextmanager
 def store_lock():
-    with open(LOCK_PATH, "a+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+    os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
+    with open(LOCK_PATH, "a+b") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        else:
+            if fh.seek(0, os.SEEK_END) == 0:
+                fh.write(b"\0")
+                fh.flush()
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _atomic_write(path, text):
@@ -162,6 +366,9 @@ def _atomic_write(path, text):
 
 
 def load():
+    if not os.path.isfile(JSON_PATH):
+        os.makedirs(STORE_DIR, exist_ok=True)
+        _atomic_write(JSON_PATH, json.dumps({"requests": [], "auditLog": []}, indent=2) + "\n")
     with open(JSON_PATH, encoding="utf-8") as fh:
         data = json.load(fh)
     data.setdefault("requests", [])
@@ -191,6 +398,19 @@ def merged_audit(request_id=None):
         out = [r for r in out if r.get("requestId") == request_id]
     out.sort(key=lambda r: r.get("timestamp") or "")
     return out
+
+
+def tracker_revision():
+    """Changes whenever the tracker files are rewritten. Used to refresh open pages."""
+    parts = []
+    for path in (JSON_PATH, CSV_PATH, AUDIT_PATH):
+        try:
+            st = os.stat(path)
+        except OSError:
+            parts.append("missing")
+        else:
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+    return "|".join(parts)
 
 
 def save(data, new_audit_rows):
@@ -242,7 +462,76 @@ def status_class(s):
     return "intake"
 
 
-app.jinja_env.globals.update(status_class=status_class, store_dir=STORE_DIR)
+def dashboard_status_labels(status):
+    """Every dashboard name contained in a stored status. Parallel work counts on each card."""
+    text = status or ""
+    low = text.lower()
+    labels = []
+    if "with vendor research" in low:
+        labels.append("With Vendor Research")
+    if "awaiting ops review" in low:
+        labels.append("Awaiting Ops Review")
+    if low == "with vendor intake" or "awaiting security" in low:
+        labels.append("Awaiting Security Approval")
+    if low == "awaiting manager approval":
+        labels.append("Awaiting Manager Decision")
+    if low == "approved":
+        labels.append("Approved")
+    if low == "rejected":
+        labels.append("Rejected")
+    if not labels and text:
+        labels.append(text)
+    return labels
+
+
+def dashboard_status_label(status):
+    """Dashboard name for one status. A parallel status keeps each part."""
+    return " + ".join(dashboard_status_labels(status))
+
+
+# key, label, include the card even when the count is zero
+DASHBOARD_CARDS = (
+    ("awaiting-security-approval", "Awaiting Security Approval", True),
+    ("with-vendor-research", "With Vendor Research", False),
+    ("awaiting-ops-review", "Awaiting Ops Review", False),
+    ("awaiting-manager-decision", "Awaiting Manager Decision", True),
+    ("approved", "Approved", False),
+    ("rejected", "Rejected", False),
+)
+_DASHBOARD_LABELS = {key: label for key, label, _always in DASHBOARD_CARDS}
+
+
+def dashboard_cards(reqs):
+    grouped = {label: 0 for _key, label, _always in DASHBOARD_CARDS}
+    extras = {}
+    for record in reqs:
+        for label in dashboard_status_labels(record.get("status", "")):
+            if label in grouped:
+                grouped[label] += 1
+            elif label:
+                extras[label] = extras.get(label, 0) + 1
+    cards = []
+    for key, label, always in DASHBOARD_CARDS:
+        count = grouped[label]
+        if count or always:
+            cards.append({"key": key, "label": label, "count": count})
+    for label in sorted(extras):
+        cards.append({"key": label, "label": label, "count": extras[label]})
+    return cards
+
+
+def dashboard_matches(record, key):
+    if not key:
+        return True
+    label = _DASHBOARD_LABELS.get(key, key)
+    return label in dashboard_status_labels(record.get("status", ""))
+
+
+app.jinja_env.globals.update(
+    status_class=status_class,
+    status_label=dashboard_status_label,
+    store_dir=STORE_DIR,
+)
 
 
 INTAKE_FIELDS = [
@@ -341,55 +630,529 @@ def flow_states(r, audit):
     return {"states": st, "tcd": tcd, "endLabel": "Rejected" if rejected else ("Approved" if final else "Done")}
 
 
+# Timed workflow steps. "intake" is the Vendor Intake form.
+STEP_DEFS = [
+    ("lob", "LOB Requestor"),
+    ("intake", "Vendor Intake form"),
+    ("research", "Vendor Research"),
+    ("security", "Security Approval"),
+    ("ops", "Ops Review"),
+    ("manager", "Manager Approval"),
+]
+
+
+def parse_ts(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith(" UTC"):
+        text = text[:-4].strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _clean(value, limit=200):
+    return (value or "").strip()[:limit]
+
+
+def _runs(record, key):
+    steps = record.setdefault("steps", {})
+    runs = steps.get(key)
+    if runs is None:
+        runs = []
+        steps[key] = runs
+    elif isinstance(runs, dict):
+        runs = [runs]
+        steps[key] = runs
+    return runs
+
+
+def open_step(record, key, ts, requestor="", requested_via=""):
+    """Start a step run. A run that is already open is left as-is."""
+    runs = _runs(record, key)
+    if runs and not runs[-1].get("endedAt"):
+        cur = runs[-1]
+    else:
+        cur = {"startedAt": ts}
+        runs.append(cur)
+    if requestor and not cur.get("requestor"):
+        cur["requestor"] = requestor
+    if requested_via and not cur.get("requested_via"):
+        cur["requested_via"] = requested_via
+    return cur
+
+
+def close_step(record, key, ts, requestor="", requested_via="", only_if_open=False):
+    """End the open run. With only_if_open, do nothing when the step is not in progress."""
+    runs = _runs(record, key)
+    if runs and not runs[-1].get("endedAt"):
+        cur = runs[-1]
+        if not cur.get("startedAt"):
+            cur["startedAt"] = ts
+    elif only_if_open:
+        return None
+    else:
+        cur = {"startedAt": ts}
+        runs.append(cur)
+    cur["endedAt"] = ts
+    if requestor:
+        cur["requestor"] = requestor
+    if requested_via:
+        cur["requested_via"] = requested_via
+    return cur
+
+
+def cancel_open_step(record, key):
+    """Drop an in-progress run that the workflow cancelled (for example Security N/A)."""
+    runs = _runs(record, key)
+    if runs and not runs[-1].get("endedAt"):
+        runs.pop()
+    if not runs:
+        record.get("steps", {}).pop(key, None)
+
+
+def _actor_parts(actor):
+    actor = (actor or "").strip()
+    low = actor.lower()
+    if low.endswith("(web)"):
+        name = actor[: -len("(web)")].strip() or actor
+        return name, "web"
+    if "orchestrator" in low:
+        return actor or "orchestrator", "orchestrator"
+    return actor or "unknown", "unknown"
+
+
+def _route_after_intake(record, ts, details, to_status):
+    open_step(record, "research", ts)
+    details_l = (details or "").lower()
+    to_l = (to_status or "").lower()
+    if "touches_customer_data=no" in details_l or "security path cancelled" in details_l:
+        cancel_open_step(record, "security")
+    elif "touches_customer_data=yes" in details_l or "awaiting security" in to_l:
+        open_step(record, "security", ts)
+
+
+def apply_audit_to_steps(record, entry):
+    """Replay one audit row onto step runs. Used for requests saved before step timing existed."""
+    ts = entry.get("timestamp") or ""
+    if not parse_ts(ts):
+        return
+    action = (entry.get("action") or "").lower()
+    details = entry.get("details") or ""
+    to_status = entry.get("toStatus") or ""
+    name, via = _actor_parts(entry.get("actor"))
+    if action.startswith("created request"):
+        close_step(record, "lob", ts, name, via)
+        open_step(record, "intake", ts)
+        return
+    if "intake refreshed" in action:
+        close_step(record, "intake", ts, name, via, only_if_open=True)
+        _route_after_intake(record, ts, details, to_status)
+        return
+    if "intake complete" in action:
+        close_step(record, "intake", ts, name, via)
+        _route_after_intake(record, ts, details, to_status)
+        return
+    if "research complete" in action or "research reconfirmed" in action:
+        close_step(record, "research", ts, name, via, only_if_open=True)
+        if "ops" in to_status.lower():
+            open_step(record, "ops", ts)
+        return
+    if "security approved" in action:
+        close_step(record, "security", ts, name, via)
+        if "manager" in to_status.lower():
+            open_step(record, "manager", ts)
+        return
+    if "ops review approved" in action:
+        close_step(record, "ops", ts, name, via)
+        if "manager" in to_status.lower():
+            open_step(record, "manager", ts)
+        return
+    if "manager final" in action:
+        close_step(record, "manager", ts, name, via)
+
+
+def derive_steps_from_audit(audit_rows):
+    scratch = {"steps": {}}
+    for entry in sorted(audit_rows or [], key=lambda row: row.get("timestamp") or ""):
+        apply_audit_to_steps(scratch, entry)
+    return scratch["steps"]
+
+
+def audit_for(data, rid):
+    rows = [row for row in data.get("auditLog", []) if row.get("requestId") == rid]
+    rows.sort(key=lambda row: row.get("timestamp") or "")
+    return rows
+
+
+def ensure_steps(record, audit_rows):
+    """Backfill step timing from the audit log the first time a legacy request is updated."""
+    if record.get("steps"):
+        return
+    record["steps"] = derive_steps_from_audit(audit_rows)
+
+
+def _step_runs(record, key):
+    steps = record.get("steps") or {}
+    runs = steps.get(key) or []
+    if isinstance(runs, dict):
+        runs = [runs]
+    return [run for run in runs if isinstance(run, dict)]
+
+
+def step_is_open(record, key):
+    runs = _step_runs(record, key)
+    return bool(runs) and not runs[-1].get("endedAt")
+
+
+def step_is_done(record, key):
+    runs = _step_runs(record, key)
+    return bool(runs) and bool(runs[-1].get("endedAt"))
+
+
+def security_is_required(record):
+    """Security Approval runs beside research and ops review when customer data is touched."""
+    if record.get("touchesCustomerData") is True:
+        return True
+    if record.get("touchesCustomerData") is False:
+        return False
+    return step_is_open(record, "security") or step_is_done(record, "security")
+
+
+def parallel_destination(record):
+    """Status while Security Approval runs beside Vendor Research or Ops Review.
+
+    Manager Approval opens only after research, ops review, and any required
+    security approval are all complete.
+    """
+    parts = []
+    if step_is_open(record, "research"):
+        parts.append(("With Vendor Research", "Vendor Research"))
+    elif step_is_open(record, "ops"):
+        parts.append(("Awaiting Ops Review", "Human - Ops Review"))
+    security_done = step_is_done(record, "security") or bool(record.get("securityApproved"))
+    if security_is_required(record) and not security_done:
+        parts.append(("Awaiting Security", "Human - Security"))
+    if parts:
+        return " + ".join(part[0] for part in parts), " + ".join(part[1] for part in parts), False
+    research_done = step_is_done(record, "research") or bool(record.get("researchComplete"))
+    ops_done = step_is_done(record, "ops") or bool(record.get("opsApproved"))
+    if research_done and ops_done and (not security_is_required(record) or security_done):
+        return "Awaiting Manager Approval", "Human - Manager", True
+    return record.get("status") or "", record.get("currentActor") or "", False
+
+
+def settle_parallel_route(record, ts):
+    """Write the parallel status and open Manager Approval when both gates are done."""
+    status, actor, open_manager = parallel_destination(record)
+    record["status"] = status
+    record["currentActor"] = actor
+    if open_manager:
+        open_step(record, "manager", ts)
+    return status, actor
+
+
+def record_step_transition(record, key, ts, requestor, requested_via):
+    """Open and close steps for a workflow action recorded in this app."""
+    if key in ("intake_no_cd", "intake_cd"):
+        close_step(record, "intake", ts, requestor, requested_via)
+        open_step(record, "research", ts)
+        if key == "intake_cd":
+            open_step(record, "security", ts)
+        else:
+            cancel_open_step(record, "security")
+    elif key == "research_done":
+        close_step(record, "research", ts, requestor, requested_via)
+        open_step(record, "ops", ts)
+        settle_parallel_route(record, ts)
+    elif key == "security_approved":
+        close_step(record, "security", ts, requestor, requested_via)
+        settle_parallel_route(record, ts)
+    elif key == "ops_approved":
+        close_step(record, "ops", ts, requestor, requested_via)
+        settle_parallel_route(record, ts)
+    elif key in ("manager_approved", "manager_rejected"):
+        close_step(record, "manager", ts, requestor, requested_via)
+
+
+def resolved_steps(record, audit_rows):
+    """Stored step runs win per step; everything else is derived from the audit log."""
+    derived = derive_steps_from_audit(audit_rows)
+    stored = record.get("steps") or {}
+    out = {}
+    for key, _label in STEP_DEFS:
+        runs = stored.get(key)
+        if runs:
+            seq = runs if isinstance(runs, list) else [runs]
+            out[key] = [dict(item) for item in seq if isinstance(item, dict)]
+        else:
+            out[key] = [dict(item) for item in derived.get(key, [])]
+    return out
+
+
+def duration_seconds(run):
+    start, end = parse_ts(run.get("startedAt")), parse_ts(run.get("endedAt"))
+    if start is None or end is None:
+        return None
+    return max(0.0, (end - start).total_seconds())
+
+
+def fmt_duration(seconds):
+    if seconds is None:
+        return "—"
+    total = int(round(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def step_rows_for(record, audit_rows):
+    steps = resolved_steps(record, audit_rows)
+    tcd = record.get("touchesCustomerData")
+    rows = []
+    for key, label in STEP_DEFS:
+        runs = steps.get(key) or []
+        if key == "security" and tcd is False and not runs:
+            rows.append({
+                "key": key, "label": label, "run": 1, "indexed": False, "started": "—", "ended": "—",
+                "duration": "N/A", "requestor": "—", "requested_via": "—", "state": "na",
+            })
+            continue
+        if not runs:
+            rows.append({
+                "key": key, "label": label, "run": 1, "indexed": False, "started": "—", "ended": "—",
+                "duration": "—", "requestor": "—", "requested_via": "—", "state": "pending",
+            })
+            continue
+        indexed = len(runs) > 1
+        for index, run in enumerate(runs, 1):
+            seconds = duration_seconds(run)
+            if run.get("endedAt"):
+                state, duration = "done", fmt_duration(seconds)
+            elif run.get("startedAt"):
+                state, duration = "active", "In progress"
+            else:
+                state, duration = "pending", "—"
+            rows.append({
+                "key": key,
+                "label": label,
+                "run": index,
+                "indexed": indexed,
+                "started": run.get("startedAt") or "—",
+                "ended": run.get("endedAt") or "—",
+                "duration": duration,
+                "requestor": run.get("requestor") or "—",
+                "requested_via": run.get("requested_via") or "—",
+                "state": state,
+            })
+    return rows
+
+
+def step_stats(requests, audit_rows):
+    by_id = {}
+    for row in audit_rows or []:
+        by_id.setdefault(row.get("requestId"), []).append(row)
+    durations = {key: [] for key, _label in STEP_DEFS}
+    for record in requests or []:
+        resolved = resolved_steps(record, by_id.get(record.get("id"), []))
+        for key, _label in STEP_DEFS:
+            for run in resolved.get(key) or []:
+                seconds = duration_seconds(run)
+                if seconds is None:
+                    continue
+                durations[key].append(seconds)
+    stats = []
+    for key, label in STEP_DEFS:
+        samples = durations[key]
+        if not samples:
+            stats.append({"key": key, "label": label, "count": 0, "mean": "—", "min": "—", "max": "—"})
+            continue
+        stats.append({
+            "key": key,
+            "label": label,
+            "count": len(samples),
+            "mean": fmt_duration(sum(samples) / len(samples)),
+            "min": fmt_duration(min(samples)),
+            "max": fmt_duration(max(samples)),
+            "mean_s": sum(samples) / len(samples),
+            "min_s": min(samples),
+            "max_s": max(samples),
+        })
+    return stats
+
+
+def intake_is_open(record):
+    """True while the Vendor Intake form has not been submitted."""
+    status = (record.get("status") or "").lower()
+    tcd = record.get("touchesCustomerData")
+    intake_done = tcd is not None or bool(record.get("intake")) or (status and "intake" not in status)
+    return not intake_done
+
+
+def _who(form, fallback):
+    requestor = _clean(form.get("requestor")) or fallback
+    requested_via = _clean(form.get("requested_via")) or "web"
+    return requestor, requested_via
+
+
+def _webhook_note(result):
+    if result == "sent":
+        return "Webhook bot notified."
+    if result == "failed":
+        return "Webhook bot could not be reached."
+    return "No webhook bot is configured."
+
+
+def intake_form_defaults(record, overlay=None):
+    intake = record.get("intake") or {}
+    hints = record.get("requestHints") or {}
+
+    def pick(*values):
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return ""
+
+    tcd = intake.get("touches_customer_data", record.get("touchesCustomerData"))
+    if tcd is True:
+        tcd_val = "yes"
+    elif tcd is False:
+        tcd_val = "no"
+    else:
+        tcd_val = ""
+    form = {
+        "vendor_legal_name": pick(intake.get("vendor_legal_name"), record.get("vendorName")),
+        "vendor_country": pick(intake.get("vendor_country"), hints.get("vendor_country")),
+        "website": pick(intake.get("website"), record.get("vendorContact")),
+        "touches_customer_data": tcd_val,
+        "customer_data_details": pick(intake.get("customer_data_details")),
+        "justification_for_access": pick(intake.get("justification_for_access")),
+        "business_owner": pick(intake.get("business_owner"), hints.get("business_owner")),
+        "target_start_date": pick(intake.get("target_start_date")),
+        "purpose": pick(intake.get("purpose"), hints.get("purpose")),
+        "pilot_length_days": pick(intake.get("pilot_length_days")),
+        "requester": pick(intake.get("requester"), hints.get("requester")),
+        "requestor": pick(hints.get("requester")),
+        "requested_via": "web",
+        "notes": "",
+    }
+    if overlay:
+        for key in form:
+            if key in overlay:
+                form[key] = overlay.get(key) if overlay.get(key) is not None else ""
+    return form
+
+
+def render_detail(record, code=200, form=None):
+    aud = merged_audit(record["id"])
+    intake_open = intake_is_open(record)
+    transitions = {k: v for k, v in TRANSITIONS.items() if not k.startswith("intake_")}
+    body = render_template(
+        "detail.html",
+        r=record,
+        audit=aud,
+        transitions=transitions,
+        flow=flow_states(record, aud),
+        intake_rows=intake_rows(record),
+        step_rows=step_rows_for(record, aud),
+        intake_open=intake_open,
+        intake_form=intake_form_defaults(record, form),
+        view="dashboard",
+        live=True,
+    )
+    return body if code == 200 else (body, code)
+
+
 @app.route("/")
 def dashboard():
     data = load()
     reqs = data["requests"]
-    statuses = sorted({r.get("status", "") for r in reqs if r.get("status")})
+    cards = dashboard_cards(reqs)
     actors = sorted({r.get("currentActor", "") for r in reqs if r.get("currentActor")})
     fs, fa, q = request.args.get("status", ""), request.args.get("actor", ""), request.args.get("q", "").strip()
     shown = [r for r in reqs
-             if (not fs or r.get("status") == fs)
+             if dashboard_matches(r, fs)
              and (not fa or r.get("currentActor") == fa)
              and (not q or q.lower() in (r.get("vendorName", "") + r.get("id", "")).lower())]
     shown = sorted(shown, key=lambda r: r.get("lastUpdated", ""), reverse=True)
-    counts = {}
-    for r in reqs:
-        counts[r.get("status", "")] = counts.get(r.get("status", ""), 0) + 1
-    return render_template("dashboard.html", reqs=shown, total=len(reqs), statuses=statuses,
-                           actors=actors, fs=fs, fa=fa, q=q, counts=counts, view="dashboard")
+    return render_template("dashboard.html", reqs=shown, total=len(reqs), cards=cards,
+                           actors=actors, fs=fs, fa=fa, q=q, view="dashboard", live=True)
+
+
+def _intake_payload(form):
+    """Map the Vendor Intake form onto the stored intake object. Unknown yes/no is omitted."""
+    payload = {}
+    for key, _label in INTAKE_FIELDS:
+        raw = _clean(form.get(key), 2000)
+        if key == "touches_customer_data":
+            flag = raw.lower()
+            if flag in ("yes", "true", "y", "1"):
+                payload[key] = True
+            elif flag in ("no", "false", "n", "0"):
+                payload[key] = False
+            continue
+        if key == "pilot_length_days" and raw.isdigit():
+            payload[key] = int(raw)
+            continue
+        if raw:
+            payload[key] = raw
+    return payload
 
 
 @app.route("/new", methods=["GET", "POST"])
 def new_request():
     if request.method == "GET":
-        return render_template("new.html", view="new", form={})
+        return render_template("new.html", view="new", form={"requested_via": "web"})
     f = request.form
-    name = f.get("vendorName", "").strip()
+    name = _clean(f.get("vendorName"), 300)
     if not name:
         flash("Vendor legal name is required.", "error")
         return render_template("new.html", view="new", form=f), 400
+    requestor, requested_via = _who(f, "LOB Requestor")
     with store_lock():
         data = load()
         rid = next_id(data)
         ts = now_utc()
         rec = {
             "id": rid, "createdAt": ts, "vendorName": name,
-            "vendorContact": f.get("vendorContact", "").strip(),
-            "requestedBy": "LOB Requestor (web)", "currentActor": "Vendor Intake",
+            "vendorContact": _clean(f.get("vendorContact"), 300),
+            "requestedBy": f"{requestor} ({requested_via})",
+            "currentActor": "Vendor Intake",
             "status": "With Vendor Intake", "lastUpdated": ts, "lastReminder": "",
             "manager": "Human - Manager",
-            "notes": (f.get("notes", "").strip() or "Created via web app; routed to Vendor Intake."),
+            "notes": (_clean(f.get("notes"), 2000) or "Created via web app; routed to the Vendor Intake form."),
             "lei": "", "entityStatus": "", "registrationStatus": "",
             "touchesCustomerData": None, "researchComplete": False,
         }
-        hints = {k: f.get(k, "").strip() for k in ("vendor_country", "business_owner", "purpose", "requester")}
+        hints = {k: _clean(f.get(k)) for k in ("vendor_country", "business_owner", "purpose")}
+        if requestor and requestor != "LOB Requestor":
+            hints["requester"] = requestor
         hints = {k: v for k, v in hints.items() if v}
         if hints:
             rec["requestHints"] = hints
-        audit = {"timestamp": ts, "requestId": rid, "actor": "LOB Requestor (web)",
-                 "action": "Created request", "fromStatus": "", "toStatus": "With Vendor Intake",
-                 "details": f"Vendor: {name}; routed to Vendor Intake"}
+        close_step(rec, "lob", ts, requestor, requested_via)
+        open_step(rec, "intake", ts)
+        audit = {
+            "timestamp": ts, "requestId": rid, "actor": f"{requestor} ({requested_via})",
+            "action": "Created request", "fromStatus": "", "toStatus": "With Vendor Intake",
+            "details": (
+                f"Vendor: {name}; routed to Vendor Intake form. "
+                f"requestor={requestor}; requested_via={requested_via}"
+            ),
+            "requestor": requestor, "requested_via": requested_via,
+        }
         data["requests"].append(rec)
         data["auditLog"].append(audit)
         save(data, [audit])
@@ -402,8 +1165,11 @@ def new_request():
         "currentActor": "Vendor Intake",
         "lastUpdated": ts,
         "notes": rec.get("notes", ""),
+        "requestor": requestor,
+        "requested_via": requested_via,
+        "step": "lob",
     })
-    flash(f"Created {rid} and routed to Vendor Intake.", "ok")
+    flash(f"Created {rid} and routed to the Vendor Intake form.", "ok")
     return redirect(url_for("detail", rid=rid))
 
 
@@ -413,19 +1179,103 @@ def detail(rid):
     r = find(data, rid)
     if not r:
         abort(404)
-    aud = merged_audit(rid)
-    return render_template("detail.html", r=r, audit=aud, transitions=TRANSITIONS,
-                           flow=flow_states(r, aud), intake_rows=intake_rows(r), view="dashboard")
+    return render_detail(r)
+
+
+@app.route("/request/<rid>/intake", methods=["POST"])
+def submit_intake(rid):
+    """Save the Vendor Intake form, complete that step, and notify the webhook bot."""
+    f = request.form
+    name = _clean(f.get("vendor_legal_name"), 300)
+    touches = _intake_payload(f).get("touches_customer_data", None)
+    if not name:
+        flash("Vendor legal name is required.", "error")
+        data = load()
+        r = find(data, rid)
+        if not r:
+            abort(404)
+        return render_detail(r, 400, f)
+    if touches is None:
+        flash("Say whether the vendor touches customer data.", "error")
+        data = load()
+        r = find(data, rid)
+        if not r:
+            abort(404)
+        return render_detail(r, 400, f)
+    requestor, requested_via = _who(f, "Vendor Intake")
+    with store_lock():
+        data = load()
+        r = find(data, rid)
+        if not r:
+            abort(404)
+        if not intake_is_open(r):
+            flash(f"{rid}: Vendor Intake form was already submitted.", "error")
+            return redirect(url_for("detail", rid=rid))
+        ts = now_utc()
+        frm = r.get("status", "")
+        key = "intake_cd" if touches else "intake_no_cd"
+        t = TRANSITIONS[key]
+        intake = _intake_payload(f)
+        intake["vendor_legal_name"] = name
+        r["vendorName"] = name
+        website = intake.get("website")
+        if website:
+            r["vendorContact"] = website
+        r["intake"] = intake
+        r["touchesCustomerData"] = touches
+        r.update(currentActor=t["next_actor"], status=t["status"], lastUpdated=ts)
+        note = _clean(f.get("notes"), 2000)
+        r["notes"] = t["label"] + (f" {note}" if note else "")
+        ensure_steps(r, audit_for(data, rid))
+        run = close_step(r, "intake", ts, requestor, requested_via)
+        open_step(r, "research", ts)
+        if touches:
+            open_step(r, "security", ts)
+        else:
+            cancel_open_step(r, "security")
+        audit = {
+            "timestamp": ts, "requestId": rid, "actor": f"{requestor} ({requested_via})",
+            "action": t["label"], "fromStatus": frm, "toStatus": t["status"],
+            "details": (
+                f"{t['details']}. requestor={requestor}; requested_via={requested_via}"
+                + (f". Note: {note}" if note else "")
+            ),
+            "requestor": requestor, "requested_via": requested_via,
+        }
+        data["auditLog"].append(audit)
+        save(data, [audit])
+        payload = {
+            "event": "intake_completed",
+            "requestId": rid,
+            "vendorName": r.get("vendorName", ""),
+            "fromStatus": frm,
+            "toStatus": t["status"],
+            "currentActor": r.get("currentActor", ""),
+            "lastUpdated": ts,
+            "notes": r.get("notes", ""),
+            "action": t["label"],
+            "step": "intake",
+            "startedAt": (run or {}).get("startedAt", ""),
+            "endedAt": ts,
+            "requestor": requestor,
+            "requested_via": requested_via,
+            "touchesCustomerData": touches,
+            "intake": intake,
+        }
+    result = push_status_change(payload)
+    flash(f"{rid}: Vendor Intake form submitted. The Vendor Intake step is completed. {_webhook_note(result)}", "ok")
+    return redirect(url_for("detail", rid=rid))
 
 
 @app.route("/request/<rid>/action", methods=["POST"])
 def action(rid):
     key = request.form.get("transition", "")
-    note = request.form.get("note", "").strip()
+    note = _clean(request.form.get("note"), 2000)
     t = TRANSITIONS.get(key)
-    if not t:
-        flash("Pick a workflow action.", "error")
+    if not t or key.startswith("intake_"):
+        flash("Pick a workflow action. Submit the Vendor Intake form to complete intake.", "error")
         return redirect(url_for("detail", rid=rid))
+    requestor, requested_via = _who(request.form, t["actor"])
     with store_lock():
         data = load()
         r = find(data, rid)
@@ -434,26 +1284,37 @@ def action(rid):
         ts = now_utc()
         frm = r.get("status", "")
         r.update(currentActor=t["next_actor"], status=t["status"], lastUpdated=ts)
-        if key == "intake_no_cd":
-            r["touchesCustomerData"] = False
-        elif key == "intake_cd":
-            r["touchesCustomerData"] = True
-        elif key == "research_done":
+        if key == "research_done":
             r["researchComplete"] = True
         elif key == "security_approved":
             r["securityApproved"] = True
         elif key == "ops_approved":
             r["opsApproved"] = True
         r["notes"] = f"{t['label']}." + (f" {note}" if note else "")
-        audit = {"timestamp": ts, "requestId": rid, "actor": f"{t['actor']} (web)",
-                 "action": t["label"], "fromStatus": frm, "toStatus": t["status"],
-                 "details": t["details"] + (f". Note: {note}" if note else "")}
+        ensure_steps(r, audit_for(data, rid))
+        record_step_transition(r, key, ts, requestor, requested_via)
+        audit = {
+            "timestamp": ts, "requestId": rid, "actor": f"{requestor} ({requested_via})",
+            "action": t["label"], "fromStatus": frm, "toStatus": r.get("status", ""),
+            "details": (
+                f"{t['details']}. requestor={requestor}; requested_via={requested_via}"
+                + (f". Note: {note}" if note else "")
+            ),
+            "requestor": requestor, "requested_via": requested_via,
+        }
         data["auditLog"].append(audit)
         save(data, [audit])
         vendor = r.get("vendorName", "")
         notes = r.get("notes", "")
         actor = r.get("currentActor", "")
-        to_status = t["status"]
+        to_status = r.get("status", "")
+        step_name = {
+            "research_done": "research",
+            "security_approved": "security",
+            "ops_approved": "ops",
+            "manager_approved": "manager",
+            "manager_rejected": "manager",
+        }.get(key, "")
     push_status_change({
         "event": "status_changed",
         "requestId": rid,
@@ -464,9 +1325,20 @@ def action(rid):
         "lastUpdated": ts,
         "notes": notes,
         "action": t["label"],
+        "step": step_name,
+        "requestor": requestor,
+        "requested_via": requested_via,
     })
     flash(f"{rid}: {t['label']}.", "ok")
     return redirect(url_for("detail", rid=rid))
+
+
+@app.route("/live.json")
+def live_revision():
+    """Revision token for pages that should reload after an MCP or web status change."""
+    response = jsonify(revision=tracker_revision())
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/status")
@@ -487,7 +1359,100 @@ def audit():
 
 @app.route("/workflow")
 def workflow():
-    return render_template("workflow.html", view="workflow", flow=None)
+    data = load()
+    return render_template(
+        "workflow.html",
+        view="workflow",
+        flow=None,
+        stats=step_stats(data.get("requests", []), merged_audit()),
+    )
+
+
+def mcp_endpoint():
+    """Streamable HTTP URL for a bot on this machine."""
+    import mcp_server
+    return mcp_server.client_url()
+
+
+def mcp_client_config():
+    import mcp_server
+    return json.dumps({
+        "mcpServers": {
+            "vendor-master": {
+                "url": mcp_endpoint(),
+                "headers": {"Authorization": "Bearer " + mcp_server.mcp_token()},
+            }
+        }
+    }, indent=2)
+
+
+MCP_TOOLS = (
+    ("submit_onboarding_request", "Create the request and complete Vendor Intake together."),
+    ("record_vendor_research", "Save the LEI check and complete Vendor Research."),
+    ("record_ops_review", "Record Ops Review approval."),
+    ("record_security_approval", "Record Security Approval when the vendor touches customer data."),
+    ("record_manager_decision", "Record the manager approve or reject decision."),
+    ("get_onboarding_request", "Read the full request, steps, and audit."),
+    ("get_onboarding_status", "Read the current status and actor."),
+    ("get_pending_requests", "List vendors waiting longer than an elapsed time. Security beside research or ops review returns two records."),
+)
+
+
+def _configuration_page(form=None, code=200):
+    import mcp_server
+    body = render_template(
+        "configuration.html",
+        view="configuration",
+        webhooks=registered_webhooks(),
+        form=form or {"name": "", "url": ""},
+        mcp_config=mcp_client_config(),
+        mcp_url=mcp_endpoint(),
+        mcp_token=mcp_server.mcp_token(),
+        mcp_clients=mcp_server.connected_clients(),
+        mcp_tools=MCP_TOOLS,
+    )
+    return body if code == 200 else (body, code)
+
+
+def _posted_webhook_form():
+    return {
+        "name": request.form.get("name", ""),
+        "url": request.form.get("url", ""),
+        "key": request.form.get("key", ""),
+    }
+
+
+@app.route("/configuration", methods=["GET", "POST"])
+def configuration():
+    if request.method == "GET":
+        return _configuration_page()
+    posted = _posted_webhook_form()
+    if request.form.get("action") == "test":
+        fields, err = _webhook_input(posted["name"], posted["url"], posted["key"])
+        if err:
+            flash(err, "error")
+            return _configuration_page(posted, 400)
+        ok, detail = deliver_webhook(fields["url"], fields["key"], webhook_test_payload())
+        if ok:
+            flash(f"Test webhook accepted (HTTP {detail}). It was not registered.", "ok")
+            return _configuration_page(posted)
+        flash(f"Test webhook failed ({detail}). It was not registered.", "error")
+        return _configuration_page(posted, 400)
+    _row, err = save_webhook(posted["name"], posted["url"], posted["key"])
+    if err:
+        flash(err, "error")
+        return _configuration_page({"name": posted["name"], "url": posted["url"], "key": ""}, 400)
+    flash("Webhook registered.", "ok")
+    return redirect(url_for("configuration"))
+
+
+@app.route("/configuration/webhooks/<webhook_id>/delete", methods=["POST"])
+def delete_configuration_webhook(webhook_id):
+    if delete_webhook(webhook_id):
+        flash("Webhook removed.", "ok")
+    else:
+        flash("That webhook is not a saved registration.", "error")
+    return redirect(url_for("configuration"))
 
 
 @app.route("/healthz")
@@ -495,5 +1460,14 @@ def healthz():
     return {"ok": True, "store": STORE_DIR, "requests": len(load()["requests"])}
 
 
+def _start_mcp_http():
+    """Run the streamable HTTP MCP server beside the web app."""
+    import threading
+    import mcp_server
+
+    threading.Thread(target=mcp_server.serve, name="vendor-master-mcp", daemon=True).start()
+
+
 if __name__ == "__main__":
+    _start_mcp_http()
     app.run(host=os.environ.get("VO_HOST", "0.0.0.0"), port=int(os.environ.get("VO_PORT", "8787")))

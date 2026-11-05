@@ -3,20 +3,55 @@
 <div class="card"><h2 style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><span>Workflow progress · <span class="mono">{{ r.id }}</span> · {{ r.vendorName }}</span><span class="pill {{ status_class(r.status) }}">{{ r.status }}</span></h2>
 {{ diagram(flow) }}</div>
 <div class="card"><h2>Request &amp; intake</h2>
-<div class="sec-h">Intake</div>{% if not r.intake %}<p class="muted" style="margin:0 0 8px;font-size:12.5px">Intake not yet completed by Vendor Intake — showing what is known so far.</p>{% endif %}
+<div class="sec-h">Vendor Intake form</div>
+{% if intake_open %}
+<p class="muted" style="margin:0 0 12px;font-size:12.5px">Submitting this form completes the Vendor Intake step and notifies the webhook bot when one is configured.</p>
+<form method="post" action="{{ url_for('submit_intake', rid=r.id) }}">
+<div class="field"><label>Vendor legal name *</label><input name="vendor_legal_name" required value="{{ intake_form.vendor_legal_name }}"></div>
+<div class="grid"><div class="field"><label>Vendor country</label><input name="vendor_country" value="{{ intake_form.vendor_country }}"></div>
+<div class="field"><label>Website</label><input name="website" value="{{ intake_form.website }}"></div></div>
+<div class="grid"><div class="field"><label>Touches customer data *</label><select name="touches_customer_data" required>
+<option value="" {{ 'selected' if not intake_form.touches_customer_data }}>Choose…</option>
+<option value="no" {{ 'selected' if intake_form.touches_customer_data=='no' }}>No</option>
+<option value="yes" {{ 'selected' if intake_form.touches_customer_data=='yes' }}>Yes</option>
+</select></div>
+<div class="field"><label>Customer data details</label><input name="customer_data_details" value="{{ intake_form.customer_data_details }}"></div></div>
+<div class="field"><label>Justification for access</label><input name="justification_for_access" value="{{ intake_form.justification_for_access }}"></div>
+<div class="grid"><div class="field"><label>Business owner</label><input name="business_owner" value="{{ intake_form.business_owner }}"></div>
+<div class="field"><label>Target start date</label><input type="date" name="target_start_date" value="{{ intake_form.target_start_date }}"></div></div>
+<div class="grid"><div class="field"><label>Purpose</label><input name="purpose" value="{{ intake_form.purpose }}"></div>
+<div class="field"><label>Pilot length (days)</label><input name="pilot_length_days" inputmode="numeric" value="{{ intake_form.pilot_length_days }}"></div></div>
+<div class="grid"><div class="field"><label>Requester</label><input name="requester" value="{{ intake_form.requester }}" placeholder="Who asked for this vendor"></div>
+<div class="field"><label>Requestor</label><input name="requestor" value="{{ intake_form.requestor }}" placeholder="Who is submitting this form"></div></div>
+<div class="grid"><div class="field"><label>Requested via</label><input name="requested_via" value="{{ intake_form.requested_via or 'web' }}"></div>
+<div class="field"><label>Notes</label><input name="notes" value="{{ intake_form.notes }}"></div></div>
+<button class="btn">Submit Vendor Intake form</button>
+</form>
+{% else %}
+<p class="muted" style="margin:0 0 8px;font-size:12.5px">{% if r.intake %}Vendor Intake form submitted — this step is completed.{% else %}Vendor Intake step is completed.{% endif %}</p>
 <dl>{% for label, v in intake_rows %}<dt>{{ label }}</dt><dd>{% if label == 'Website' and v != '—' %}<a href="{{ v }}" target="_blank" rel="noopener">{{ v }}</a>{% else %}{{ v }}{% endif %}</dd>{% endfor %}</dl>
+{% endif %}
 <div class="sec-h">Request</div><dl>
 <dt>Request ID</dt><dd class="mono">{{ r.id }}</dd><dt>Status</dt><dd><span class="pill {{ status_class(r.status) }}">{{ r.status }}</span></dd>
 <dt>Current actor</dt><dd><b>{{ r.currentActor }}</b></dd><dt>Requested by</dt><dd>{{ r.requestedBy }}</dd>
 <dt>Created</dt><dd class="mono">{{ r.createdAt }}</dd><dt>Last updated</dt><dd class="mono">{{ r.lastUpdated }}</dd></dl></div>
+<div class="card"><h2>Step timing</h2>
+<p class="muted" style="margin:-6px 0 10px;font-size:12.5px">Start, end, requestor, and requested via for each step.</p>
+<div class="table-wrap"><table><thead><tr><th>Step</th><th>Started</th><th>Ended</th><th>Duration</th><th>Requestor</th><th>Requested via</th></tr></thead><tbody>
+{% for row in step_rows %}<tr><td>{{ row.label }}{% if row.indexed %} <span class="muted">#{{ row.run }}</span>{% endif %}</td>
+<td class="mono">{{ row.started }}</td><td class="mono">{{ row.ended }}</td><td class="mono">{{ row.duration }}</td>
+<td>{{ row.requestor }}</td><td class="mono">{{ row.requested_via }}</td></tr>{% endfor %}
+</tbody></table></div></div>
 <div class="card"><h2>Research (GLEIF)</h2><dl>
 <dt>LEI</dt><dd class="mono">{{ r.lei or '—' }}</dd><dt>Entity status</dt><dd>{{ r.entityStatus or '—' }}</dd>
 <dt>Registration status</dt><dd>{{ r.registrationStatus or '—' }}</dd><dt>Research complete</dt><dd>{{ 'Yes' if r.researchComplete else 'No' }}</dd>
 {% if r.research %}<dt>Source</dt><dd><a href="{{ r.research.source }}" target="_blank" rel="noopener">GLEIF search</a></dd><dt>Note</dt><dd>{{ r.research.note }}</dd>{% endif %}</dl></div>
 <div class="card"><h2>Record workflow action</h2><form method="post" action="{{ url_for('action', rid=r.id) }}" class="filters">
 <div><label>Action</label><select name="transition" required><option value="">Choose…</option>{% for k,t in transitions.items() %}<option value="{{ k }}">{{ t.label }}</option>{% endfor %}</select></div>
+<div><label>Requestor</label><input name="requestor" placeholder="Who is completing this step"></div>
+<div><label>Requested via</label><input name="requested_via" value="web"></div>
 <div style="flex:1"><label>Note (optional)</label><input name="note" style="width:100%"></div><button class="btn">Record</button></form>
-<p class="muted" style="margin:6px 0 0;font-size:12px">Security approval routes to Human - Manager; Research routes to Human - Ops Review → Manager.</p></div>
+<p class="muted" style="margin:6px 0 0;font-size:12px">When the vendor touches customer data, Security Approval stays open beside Vendor Research and Ops Review. Manager Approval opens after both Ops Review and Security Approval are complete.</p></div>
 <div class="card"><h2>Audit trail</h2><table><thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>From → To</th><th>Details</th></tr></thead><tbody>
 {% for a in audit|reverse %}<tr><td class="mono">{{ a.timestamp }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.fromStatus or '—' }} → {{ a.toStatus or '—' }}</td><td>{{ a.details }}</td></tr>
 {% else %}<tr><td colspan="5" class="muted">No audit entries.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}

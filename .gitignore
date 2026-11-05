@@ -5,6 +5,7 @@ app.pid
 app.log
 .store.lock
 webhook.env
+webhooks.json
 backup/
 secrets/
 .env

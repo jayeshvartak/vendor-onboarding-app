@@ -1,0 +1,48 @@
+{% extends "base.html" %}{% block body %}
+<h1>Configuration</h1><p class="sub">Webhooks that receive status changes, and how a Grok bot connects to Vendor Master.</p>
+<div class="card"><h2>Registered webhooks</h2>
+<p class="muted" style="margin:-6px 0 12px">Every status change is posted to each webhook. The request is still saved when a webhook cannot be reached. The environment webhook comes from <span class="mono">VO_STATUS_WEBHOOK_URL</span> and <span class="mono">VO_STATUS_WEBHOOK_KEY</span>.</p>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>URL</th><th>Key</th><th>Source</th><th></th></tr></thead><tbody>
+{% for hook in webhooks %}<tr>
+<td>{{ hook.name }}</td>
+<td class="mono">{{ hook.url }}</td>
+<td class="mono">{{ hook.key_mask }}</td>
+<td>{{ hook.source }}</td>
+<td>{% if hook.source == 'saved' %}<form method="post" action="{{ url_for('delete_configuration_webhook', webhook_id=hook.id) }}" style="margin:0"><button class="btn ghost" type="submit">Remove</button></form>{% else %}<span class="muted">—</span>{% endif %}</td>
+</tr>{% else %}<tr><td colspan="5" class="muted">No webhooks registered.</td></tr>{% endfor %}
+</tbody></table></div></div>
+<div class="card" style="max-width:640px"><h2>Add webhook</h2>
+<form method="post">
+<div class="field"><label>Name</label><input name="name" value="{{ form.name }}" placeholder="Ops status bot"></div>
+<div class="field"><label>URL</label><input name="url" type="url" required value="{{ form.url }}" placeholder="https://example.com/vendor-master"></div>
+<div class="field"><label>Bearer key</label><input name="key" type="password" required autocomplete="off" placeholder="Sent as Authorization: Bearer" value="{{ form.key or '' }}"></div>
+<div class="actions">
+<button class="btn ghost" type="submit" name="action" value="test">Test webhook</button>
+<button class="btn" type="submit" name="action" value="add">Add webhook</button>
+</div>
+<p class="muted" style="margin:10px 0 0">Test sends a sample <span class="mono">webhook_test</span> event and does not register the webhook.</p>
+</form></div>
+<div class="card"><h2>Connect to the MCP server</h2>
+<p>The server name is <span class="mono">vendor-master</span>. It speaks MCP over streamable HTTP and uses the same tracker as this app (<span class="mono">{{ store_dir }}</span>). The web app starts this endpoint.</p>
+<p>Grok connects to:</p>
+<pre class="config mono">{{ mcp_url }}</pre>
+<p>Bearer token. Send it on every request as <span class="mono">Authorization: Bearer</span>. This is <span class="mono">VO_MCP_TOKEN</span> when that variable is set at startup, and <span class="mono">2026-str-mcp</span> otherwise.</p>
+<pre class="config mono">{{ mcp_token }}</pre>
+<p>MCP client configuration:</p>
+<pre class="config mono">{{ mcp_config }}</pre>
+<h2>Connected MCP clients</h2>
+<p class="muted" style="margin:-6px 0 12px">A client stays on this list while its MCP session is open. Each status change is sent to these clients as <span class="mono">notifications/message</span> on that stream. The vendor record is still saved when no client is listening.</p>
+<div class="table-wrap"><table><thead><tr><th>Client</th><th>Version</th><th>Address</th><th>Connected</th><th>Session</th></tr></thead><tbody>
+{% for client in mcp_clients %}<tr>
+<td>{{ client.name }}</td>
+<td class="mono">{{ client.version or "—" }}</td>
+<td class="mono">{{ client.remote or "—" }}</td>
+<td class="mono">{{ client.connectedAt or "—" }}</td>
+<td class="mono">{{ client.sessionId }}</td>
+</tr>{% else %}<tr><td colspan="5" class="muted">No MCP clients are connected.</td></tr>{% endfor %}
+</tbody></table></div>
+<p>Every tool requires <span class="mono">requestor</span> and <span class="mono">requested_via</span>. <span class="mono">submit_onboarding_request</span> creates the request and completes Vendor Intake in that call.</p>
+<table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody>
+{% for name, about in mcp_tools %}<tr><td class="mono">{{ name }}</td><td>{{ about }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

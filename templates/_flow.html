@@ -9,13 +9,13 @@
 {% macro node(key, x, y, w, l1, l2, human, st) -%}
 {% set state = st[key] if st else ('human' if human else 'static') %}
 <g class="n n-{{ state }}"><rect x="{{ x }}" y="{{ y }}" width="{{ w }}" height="58" rx="9"/>
-<text x="{{ x + w/2 }}" y="{{ y + (25 if l2 else 34) }}" text-anchor="middle" class="t1">{{ l1 }}</text>{% if st and state == "active" %}<text x="{{ x + w/2 }}" y="{{ y + 72 }}" text-anchor="middle" class="ip">IN PROGRESS</text>{% endif %}
+<text x="{{ x + w/2 }}" y="{{ y + (25 if l2 else 34) }}" text-anchor="middle" class="t1{{ ' long' if l1|length > 16 else '' }}">{{ l1 }}</text>{% if st and state == "active" %}<text x="{{ x + w/2 }}" y="{{ y + 72 }}" text-anchor="middle" class="ip">IN PROGRESS</text>{% endif %}
 {% if l2 %}<text x="{{ x + w/2 }}" y="{{ y + 43 }}" text-anchor="middle" class="t2">{{ l2 }}</text>{% endif %}
 {% if st %}{{ badge(x + w - 6, y + 6, state) }}{% endif %}</g>
 {%- endmacro %}
 {% macro diagram(flow) %}
 {% set st = flow.states if flow else None %}
-<svg class="wf" viewBox="0 0 1130 330" role="img" aria-label="Vendor onboarding workflow">
+<svg class="wf" viewBox="0 0 1130 330" role="img" aria-label="Vendor Master workflow">
 <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8b95a3"/></marker></defs>
 <g class="e">
   <line x1="150" y1="59" x2="186" y2="59" marker-end="url(#ah)"/>
@@ -35,7 +35,7 @@
   <text x="356" y="50" text-anchor="middle">always</text>
 </g>
 {{ node('lob', 10, 30, 140, 'LOB Requestor', '(Human)', true, st) }}
-{{ node('intake', 190, 30, 140, 'Vendor Intake', '', false, st) }}
+{{ node('intake', 190, 30, 140, 'Vendor Intake form', '', false, st) }}
 {{ node('research', 390, 30, 140, 'Vendor Research', 'GLEIF / LEI', false, st) }}
 {{ node('ops', 570, 30, 156, 'Ops Review', '(Human)', true, st) }}
 {{ node('manager', 766, 30, 166, 'Manager Approval', '(Human)', true, st) }}

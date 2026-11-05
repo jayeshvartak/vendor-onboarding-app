@@ -1,11 +1,16 @@
 {% extends "base.html" %}{% block body %}
-<h1>Workflow</h1><p class="sub">How a vendor onboarding request moves through the org.</p>
+<h1>Workflow</h1><p class="sub">How a vendor record moves through Vendor Master.</p>
 {% from "_flow.html" import diagram %}
-<div class="card"><h2>Vendor onboarding workflow</h2>{{ diagram(None) }}
-<p class="rule" style="margin-top:14px"><b>Rule:</b> After Vendor Intake, the decision <b>“touches customer data?”</b> decides the Security path. <b>YES</b> → Security Approval (Human), which merges into <b>Manager Approval (Human)</b> — not Ops Review. <b>NO</b> → Security is N/A. Vendor Research → Ops Review (Human) → Manager Approval runs in every case.</p></div>
-<div class="card"><h2>Steps</h2><ol><li>LOB Requestor creates a request (this app's <a href="{{ url_for('new_request') }}">New request</a> form) → Vendor Intake.</li>
-<li>Vendor Intake collects details (legal name, country, website, customer data, owner, start date, purpose, pilot length).</li>
-<li>Decision “touches customer data?”: YES → also Security Approval (Human); NO → Security N/A. Research always runs.</li>
-<li>Vendor Research (GLEIF LEI check) → Ops Review (Human) → Manager Approval (Human). Security Approval merges into Manager Approval.</li>
+<div class="card"><h2>Vendor Master workflow</h2>{{ diagram(None) }}
+<p class="rule" style="margin-top:14px"><b>Rule:</b> After the Vendor Intake form is submitted, the Vendor Intake step is completed and the decision <b>“touches customer data?”</b> decides the Security path. <b>YES</b> → Security Approval runs at the same time as Vendor Research and then Ops Review. Manager Approval opens only after Ops Review and Security Approval are both complete. <b>NO</b> → Security is N/A, and Manager Approval opens when Ops Review is complete.</p></div>
+<div class="card"><h2>Step statistics</h2>
+<p class="sub">Completed executions only. Duration is the step end time minus its start time. Each step also stores the requestor and how it was requested (<span class="mono">requested_via</span>); those are on the request detail.</p>
+<div class="table-wrap"><table><thead><tr><th>Step</th><th>Executions</th><th>Mean</th><th>Min</th><th>Max</th></tr></thead><tbody>
+{% for s in stats %}<tr><td>{{ s.label }}</td><td class="mono">{{ s.count }}</td><td class="mono">{{ s.mean }}</td><td class="mono">{{ s.min }}</td><td class="mono">{{ s.max }}</td></tr>{% endfor %}
+</tbody></table></div></div>
+<div class="card"><h2>Steps</h2><ol><li>LOB Requestor creates a request (this app's <a href="{{ url_for('new_request') }}">New request</a> form) → Vendor Intake form.</li>
+<li>The Vendor Intake form collects details (legal name, country, website, customer data, owner, start date, purpose, pilot length). Submitting it completes the Vendor Intake step and notifies the webhook bot when one is configured.</li>
+<li>Decision “touches customer data?”: YES → Security Approval (Human) runs beside Vendor Research and Ops Review; NO → Security N/A. Research always runs.</li>
+<li>Vendor Research (GLEIF LEI check) → Ops Review (Human). Manager Approval opens when Ops Review is complete and, if the vendor touches customer data, Security Approval is complete too.</li>
 <li>Human - Manager gives final approve / reject.</li></ol>
 <p class="muted">Track progress on the <a href="{{ url_for('dashboard') }}">Dashboard</a>, <a href="{{ url_for('status') }}">Status lookup</a>, and <a href="{{ url_for('audit') }}">Audit trail</a>.</p></div>{% endblock %}
