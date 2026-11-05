@@ -9,4 +9,6 @@
 <a href="{{ url_for('configuration') }}" class="{{ 'on' if view=='configuration' }}">Configuration</a></nav></header>
 <main>{% with msgs = get_flashed_messages(with_categories=true) %}{% for c,m in msgs %}<div class="flash {{c}}">{{m}}</div>{% endfor %}{% endwith %}
 {% block body %}{% endblock %}</main>
-<footer>Vendor Master · system of record · no login · source of truth: <span class="mono">{{ store_dir }}</span></footer></body></html>
+<footer>Vendor Master · system of record · no login · source of truth: <span class="mono">{{ store_dir }}</span></footer>
+{% if live %}<script src="{{ url_for('static', filename='live.js') }}?v=1"></script>{% endif %}
+</body></html>

@@ -25,7 +25,7 @@ from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-from flask import Flask, abort, flash, redirect, render_template, request, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, url_for
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STORE_DIR = os.environ.get(
@@ -398,6 +398,19 @@ def merged_audit(request_id=None):
         out = [r for r in out if r.get("requestId") == request_id]
     out.sort(key=lambda r: r.get("timestamp") or "")
     return out
+
+
+def tracker_revision():
+    """Changes whenever the tracker files are rewritten. Used to refresh open pages."""
+    parts = []
+    for path in (JSON_PATH, CSV_PATH, AUDIT_PATH):
+        try:
+            st = os.stat(path)
+        except OSError:
+            parts.append("missing")
+        else:
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+    return "|".join(parts)
 
 
 def save(data, new_audit_rows):
@@ -1057,6 +1070,7 @@ def render_detail(record, code=200, form=None):
         intake_open=intake_open,
         intake_form=intake_form_defaults(record, form),
         view="dashboard",
+        live=True,
     )
     return body if code == 200 else (body, code)
 
@@ -1074,7 +1088,7 @@ def dashboard():
              and (not q or q.lower() in (r.get("vendorName", "") + r.get("id", "")).lower())]
     shown = sorted(shown, key=lambda r: r.get("lastUpdated", ""), reverse=True)
     return render_template("dashboard.html", reqs=shown, total=len(reqs), cards=cards,
-                           actors=actors, fs=fs, fa=fa, q=q, view="dashboard")
+                           actors=actors, fs=fs, fa=fa, q=q, view="dashboard", live=True)
 
 
 def _intake_payload(form):
@@ -1317,6 +1331,14 @@ def action(rid):
     })
     flash(f"{rid}: {t['label']}.", "ok")
     return redirect(url_for("detail", rid=rid))
+
+
+@app.route("/live.json")
+def live_revision():
+    """Revision token for pages that should reload after an MCP or web status change."""
+    response = jsonify(revision=tracker_revision())
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/status")

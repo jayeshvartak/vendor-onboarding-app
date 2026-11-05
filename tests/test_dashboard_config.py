@@ -109,6 +109,33 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertIn("Awaiting Manager Decision", body)
         self.assertNotIn("Awaiting Manager Approval", body)
 
+    def test_open_pages_reload_when_the_tracker_changes(self):
+        home = self.client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn("/static/live.js", home.get_data(as_text=True))
+        detail = self.client.get("/request/VO-1")
+        self.assertEqual(detail.status_code, 200)
+        self.assertIn("Workflow progress", detail.get_data(as_text=True))
+        self.assertIn("/static/live.js", detail.get_data(as_text=True))
+        self.assertNotIn("/static/live.js", self.client.get("/new").get_data(as_text=True))
+
+        first = self.client.get("/live.json")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.headers["Cache-Control"], "no-store")
+        token = first.get_json()["revision"]
+        self.assertTrue(token)
+        again = self.client.get("/live.json").get_json()["revision"]
+        self.assertEqual(again, token)
+
+        with vo.store_lock():
+            data = vo.load()
+            data["requests"][0]["status"] = "Awaiting Ops Review"
+            data["requests"][0]["lastUpdated"] = "2026-11-05 06:00:00 UTC"
+            vo.save(data, [])
+        changed = self.client.get("/live.json").get_json()["revision"]
+        self.assertNotEqual(changed, token)
+        self.assertIn("Awaiting Ops Review", self.client.get("/request/VO-1").get_data(as_text=True))
+
     def test_configuration_lists_adds_and_removes_webhooks(self):
         page = self.client.get("/configuration")
         self.assertEqual(page.status_code, 200)
