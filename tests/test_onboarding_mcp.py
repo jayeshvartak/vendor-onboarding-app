@@ -64,7 +64,13 @@ class OnboardingMcpTests(unittest.TestCase):
             "record_manager_decision",
             "get_onboarding_request",
             "get_onboarding_status",
+            "get_pending_requests",
         })
+        pending = tools["get_pending_requests"].parameters
+        self.assertEqual(
+            set(pending.get("required") or []),
+            {"elapsed", "unit", "requestor", "requested_via"},
+        )
         self.assertNotIn("create_onboarding_request", tools)
         self.assertNotIn("submit_vendor_intake", tools)
         for name, tool in tools.items():
@@ -146,6 +152,96 @@ class OnboardingMcpTests(unittest.TestCase):
         self.assertIn("touches customer data", blocked["error"])
         bad = api.record_manager_decision(created["requestId"], "maybe", "Mina", "web")
         self.assertIn("approve or reject", bad["error"])
+
+    def test_pending_requests_over_elapsed_time(self):
+        missing = api.get_pending_requests(1, "hours", "", "grok")
+        self.assertIn("requestor", missing["error"])
+        self.assertFalse(api.get_pending_requests(0, "minutes", "Jayesh", "grok")["ok"])
+        self.assertIn("minutes or hours", api.get_pending_requests(2, "days", "Jayesh", "grok")["error"])
+
+        now = "2026-11-05 12:00:00 UTC"
+        records = [
+            _pending("VO-PEND-OPS", "Old Ops Co", "Awaiting Ops Review", "Human - Ops Review",
+                     {"ops": "2026-11-05 08:00:00 UTC"}),
+            _pending("VO-PEND-NEW", "New Ops Co", "Awaiting Ops Review", "Human - Ops Review",
+                     {"ops": "2026-11-05 11:30:00 UTC"}),
+            _pending("VO-PEND-SEC", "Security Co", "With Vendor Research + Awaiting Security",
+                     "Vendor Research + Human - Security",
+                     {"security": "2026-11-05 10:00:00 UTC", "research": "2026-11-05 10:00:00 UTC"}),
+            _pending("VO-PEND-BOTH", "Both Gates Co", "Awaiting Ops Review", "Human - Ops Review",
+                     {"security": "2026-11-05 09:00:00 UTC", "ops": "2026-11-05 10:30:00 UTC"}),
+            _pending("VO-PEND-EXACT", "Exact Hour Co", "Awaiting Manager Approval", "Human - Manager",
+                     {"manager": "2026-11-05 11:00:00 UTC"}),
+            _pending("VO-PEND-MGR", "Manager Co", "Awaiting Manager Approval", "Human - Manager",
+                     {"manager": "2026-11-05 10:59:00 UTC"}),
+            _pending("VO-PEND-DONE", "Approved Co", "Approved", "—",
+                     {"manager": "2026-11-05 08:00:00 UTC"}, ended={"manager": "2026-11-05 09:00:00 UTC"}),
+            {
+                "id": "VO-PEND-INTAKE", "vendorName": "Intake Co", "status": "With Vendor Intake",
+                "currentActor": "Vendor Intake", "lastUpdated": "2026-11-01 00:00:00 UTC",
+                "touchesCustomerData": True, "lei": "",
+            },
+            {
+                "id": "VO-PEND-LEGACY", "vendorName": "Legacy Ops Co", "status": "Awaiting Ops Review",
+                "currentActor": "Human - Ops Review", "lastUpdated": "2026-11-05 07:00:00 UTC",
+                "touchesCustomerData": False, "lei": "LEGACYLEI",
+            },
+        ]
+        with api.vo.store_lock():
+            data = api.vo.load()
+            data["requests"].extend(records)
+            api.vo.save(data, [])
+
+        found = api.get_pending_requests(1, "hours", "Jayesh", "grok", now=now)
+        self.assertTrue(found["ok"], found)
+        self.assertEqual(found["unit"], "hours")
+        self.assertEqual(found["thresholdMinutes"], 60)
+        by_id = {row["requestId"]: row for row in found["vendors"]}
+        self.assertEqual(set(by_id), {
+            "VO-PEND-OPS", "VO-PEND-SEC", "VO-PEND-BOTH", "VO-PEND-MGR", "VO-PEND-LEGACY",
+        })
+        self.assertEqual([item["stage"] for item in by_id["VO-PEND-BOTH"]["pending"]],
+                         ["Security Approval", "Ops Review"])
+        self.assertEqual(by_id["VO-PEND-SEC"]["pending"][0]["stage"], "Security Approval")
+        self.assertEqual(by_id["VO-PEND-SEC"]["pending"][0]["elapsed"], "2h")
+        self.assertEqual(by_id["VO-PEND-OPS"]["status"], "Awaiting Ops Review")
+        self.assertEqual(by_id["VO-PEND-MGR"]["pending"][0]["stage"], "Manager Decision")
+        self.assertEqual(by_id["VO-PEND-LEGACY"]["lei"], "LEGACYLEI")
+        self.assertEqual(by_id["VO-PEND-LEGACY"]["pending"][0]["pendingSince"], "2026-11-05 07:00:00 UTC")
+        self.assertGreater(by_id["VO-PEND-LEGACY"]["pending"][0]["elapsedMinutes"],
+                           by_id["VO-PEND-MGR"]["pending"][0]["elapsedMinutes"])
+        self.assertEqual(found["vendors"][0]["requestId"], "VO-PEND-LEGACY")
+
+        tighter = api.get_pending_requests(90, "minutes", "Jayesh", "grok", now=now)
+        tight_ids = {row["requestId"]: row for row in tighter["vendors"]}
+        self.assertNotIn("VO-PEND-MGR", tight_ids)
+        self.assertEqual([item["stage"] for item in tight_ids["VO-PEND-BOTH"]["pending"]],
+                         ["Security Approval"])
+        alias = api.get_pending_requests(1, "hour", "Jayesh", "grok", now=now)
+        self.assertEqual(alias["count"], found["count"])
+
+
+def _pending(rid, name, status, actor, started, ended=None):
+    steps = {}
+    for key, ts in started.items():
+        run = {"startedAt": ts}
+        if ended and key in ended:
+            run["endedAt"] = ended[key]
+        steps[key] = [run]
+    return {
+        "id": rid,
+        "vendorName": name,
+        "status": status,
+        "currentActor": actor,
+        "lastUpdated": "2026-11-05 12:00:00 UTC",
+        "touchesCustomerData": "security" in started,
+        "lei": "",
+        "entityStatus": "",
+        "registrationStatus": "",
+        "vendorContact": "https://example.test",
+        "requestedBy": "Jayesh (grok)",
+        "steps": steps,
+    }
 
 
 if __name__ == "__main__":

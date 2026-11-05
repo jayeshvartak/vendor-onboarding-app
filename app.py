@@ -1289,6 +1289,7 @@ MCP_TOOLS = (
     ("record_manager_decision", "Record the manager approve or reject decision."),
     ("get_onboarding_request", "Read the full request, steps, and audit."),
     ("get_onboarding_status", "Read the current status and actor."),
+    ("get_pending_requests", "List vendors waiting on Ops Review, Security Approval, or Manager Decision longer than an elapsed time."),
 )
 
 

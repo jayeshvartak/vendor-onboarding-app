@@ -83,7 +83,9 @@ server = MCPServer(
         "Vendor Master is the system of record for vendors. Submit one onboarding "
         "request to create the vendor record and complete Vendor Intake. Then record "
         "research, ops review, security approval when the vendor touches customer data, "
-        "and the manager decision. Every tool requires requestor and requested_via."
+        "and the manager decision. Call get_pending_requests with an elapsed time in "
+        "minutes or hours to list vendors waiting on Ops Review, Security Approval, or "
+        "Manager Decision longer than that. Every tool requires requestor and requested_via."
     ),
 )
 
@@ -211,6 +213,22 @@ def get_onboarding_status(
     requested_via: RequestedVia,
 ) -> dict:
     return api.get_onboarding_status(request_id, requestor, requested_via)
+
+
+@server.tool(description=(
+    "List vendors waiting on Ops Review, Security Approval, or Manager Decision for longer "
+    "than the elapsed time. Pass elapsed as a number and unit as minutes or hours. "
+    "The wait is measured from when that stage opened. A vendor waiting on more than one "
+    "of these stages includes each stage that is over the elapsed time. "
+    "Requires requestor and requested_via. Does not change any request."
+))
+def get_pending_requests(
+    elapsed: Annotated[float, Field(description="Amount of time the vendor has been waiting. Only longer waits are returned.")],
+    unit: Annotated[str, Field(description="minutes or hours.")],
+    requestor: Requestor,
+    requested_via: RequestedVia,
+) -> dict:
+    return api.get_pending_requests(elapsed, unit, requestor, requested_via)
 
 
 def serve():

@@ -59,6 +59,7 @@ class StreamableHttpTests(unittest.TestCase):
         names = {tool.name for tool in listed.tools}
         self.assertIn("submit_onboarding_request", names)
         self.assertIn("get_onboarding_status", names)
+        self.assertIn("get_pending_requests", names)
         self.assertNotIn("create_onboarding_request", names)
         self.assertNotIn("submit_vendor_intake", names)
         self.assertEqual(mcp_server.client_url(), f"http://127.0.0.1:{PORT}/mcp")

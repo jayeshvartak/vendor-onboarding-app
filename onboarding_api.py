@@ -4,7 +4,18 @@ Submitting an onboarding request creates the record and completes Vendor Intake
 in one step. There is no separate create-request tool. Every call requires
 requestor and requested_via.
 """
+import math
+from datetime import datetime, timezone
+
 import app as vo
+
+
+# Stages a caller can ask about. The wait starts when that step opens.
+PENDING_STAGES = (
+    ("ops", "Ops Review", "awaiting ops review"),
+    ("security", "Security Approval", "awaiting security"),
+    ("manager", "Manager Decision", "awaiting manager approval"),
+)
 
 
 def _actor(requestor, requested_via):
@@ -412,3 +423,110 @@ def get_onboarding_status(request_id, requestor, requested_via):
     if err:
         return err
     return _status_body(record, requestor, requested_via)
+
+
+def _threshold(elapsed, unit):
+    if isinstance(elapsed, bool):
+        return None, {"ok": False, "error": "elapsed must be a number of minutes or hours"}
+    try:
+        amount = float(elapsed)
+    except (TypeError, ValueError):
+        return None, {"ok": False, "error": "elapsed must be a number of minutes or hours"}
+    if not math.isfinite(amount) or amount <= 0:
+        return None, {"ok": False, "error": "elapsed must be greater than zero"}
+    name = vo._clean(unit, 20).lower()
+    if name in ("minute", "minutes", "min", "mins", "m"):
+        return (amount, "minutes", amount), None
+    if name in ("hour", "hours", "hr", "hrs", "h"):
+        return (amount, "hours", amount * 60), None
+    return None, {"ok": False, "error": "unit must be minutes or hours"}
+
+
+def _status_says(record, marker):
+    return marker in (record.get("status") or "").lower()
+
+
+def _pending_stages(record, audit):
+    """Open Ops, Security, or Manager steps. Status is the fallback when that step was never timed."""
+    steps = vo.resolved_steps(record, audit)
+    hits = []
+    for key, label, marker in PENDING_STAGES:
+        runs = [run for run in (steps.get(key) or []) if isinstance(run, dict)]
+        if runs and not runs[-1].get("endedAt"):
+            started = runs[-1].get("startedAt") or record.get("lastUpdated") or ""
+            hits.append((label, started))
+            continue
+        if runs:
+            continue
+        if _status_says(record, marker):
+            hits.append((label, record.get("lastUpdated") or record.get("createdAt") or ""))
+    return hits
+
+
+def _vendor_pending(record, audit, current, threshold_minutes):
+    pending = []
+    for label, started in _pending_stages(record, audit):
+        start = vo.parse_ts(started)
+        if start is None:
+            continue
+        seconds = (current - start).total_seconds()
+        if seconds <= threshold_minutes * 60:
+            continue
+        pending.append({
+            "stage": label,
+            "pendingSince": started,
+            "elapsedMinutes": round(seconds / 60, 1),
+            "elapsed": vo.fmt_duration(seconds),
+        })
+    pending.sort(key=lambda item: item["elapsedMinutes"], reverse=True)
+    if not pending:
+        return None
+    return {
+        "requestId": record.get("id"),
+        "vendorName": record.get("vendorName", ""),
+        "status": record.get("status", ""),
+        "currentActor": record.get("currentActor", ""),
+        "touchesCustomerData": record.get("touchesCustomerData"),
+        "lei": record.get("lei") or "",
+        "entityStatus": record.get("entityStatus") or "",
+        "registrationStatus": record.get("registrationStatus") or "",
+        "vendorContact": record.get("vendorContact") or "",
+        "requestedBy": record.get("requestedBy") or "",
+        "lastUpdated": record.get("lastUpdated") or "",
+        "pending": pending,
+    }
+
+
+def get_pending_requests(elapsed, unit, requestor, requested_via, now=None):
+    """Vendors waiting on Ops Review, Security Approval, or Manager Decision longer than elapsed."""
+    who, err = _actor(requestor, requested_via)
+    if err:
+        return err
+    requestor, requested_via = who
+    parsed, err = _threshold(elapsed, unit)
+    if err:
+        return err
+    amount, unit_name, threshold_minutes = parsed
+    if isinstance(now, datetime):
+        current = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    else:
+        current = vo.parse_ts(now or vo.now_utc())
+    data = vo.load()
+    vendors = []
+    for record in data.get("requests", []):
+        audit = vo.merged_audit(record.get("id"))
+        detail = _vendor_pending(record, audit, current, threshold_minutes)
+        if detail:
+            vendors.append(detail)
+    vendors.sort(key=lambda item: item["pending"][0]["elapsedMinutes"], reverse=True)
+    return {
+        "ok": True,
+        "elapsed": amount,
+        "unit": unit_name,
+        "thresholdMinutes": threshold_minutes,
+        "asOf": current.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "count": len(vendors),
+        "vendors": vendors,
+        "requestor": requestor,
+        "requested_via": requested_via,
+    }
