@@ -26,6 +26,8 @@
 <p>The server name is <span class="mono">vendor-master</span>. It speaks MCP over streamable HTTP and uses the same tracker as this app (<span class="mono">{{ store_dir }}</span>). The web app starts this endpoint.</p>
 <p>Grok connects to:</p>
 <pre class="config mono">{{ mcp_url }}</pre>
+<p>Bearer token. Send it on every request as <span class="mono">Authorization: Bearer</span>. This is <span class="mono">VO_MCP_TOKEN</span> when that variable is set at startup, and <span class="mono">2026-str-mcp</span> otherwise.</p>
+<pre class="config mono">{{ mcp_token }}</pre>
 <p>MCP client configuration:</p>
 <pre class="config mono">{{ mcp_config }}</pre>
 <p>Every tool requires <span class="mono">requestor</span> and <span class="mono">requested_via</span>. <span class="mono">submit_onboarding_request</span> creates the request and completes Vendor Intake in that call.</p>

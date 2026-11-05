@@ -15,7 +15,7 @@ pip install -r requirements.txt
 
 Open http://127.0.0.1:8787 (health check: `/healthz`). The same process serves MCP at http://127.0.0.1:8788/mcp. Stop the app with `./stop.sh`.
 
-`start.sh` runs in the background on `0.0.0.0:8787` by default and writes `app.pid` and `app.log`. Override the bind with `VO_PORT` and `VO_HOST`. Override the MCP bind with `VO_MCP_HOST`, `VO_MCP_PORT`, and `VO_MCP_PATH`. If `.venv` is missing, `start.sh` creates it and installs `requirements.txt`.
+`start.sh` runs in the background on `0.0.0.0:8787` by default and writes `app.pid` and `app.log`. Override the bind with `VO_PORT` and `VO_HOST`. Override the MCP bind with `VO_MCP_HOST`, `VO_MCP_PORT`, and `VO_MCP_PATH`. Override the MCP bearer token with `VO_MCP_TOKEN` (the default is `2026-str-mcp`). If `.venv` is missing, `start.sh` creates it and installs `requirements.txt`.
 
 ## Pages
 
@@ -43,11 +43,16 @@ http://127.0.0.1:8788/mcp
 
 Server name: `vendor-master`. It reads and writes the same `VO_STORE_DIR` tracker as the web app. Every tool requires `requestor` and `requested_via`. There is no separate create-request tool.
 
+Every MCP request must include `Authorization: Bearer <token>`. The Configuration page shows the token in use.
+
 ```json
 {
   "mcpServers": {
     "vendor-master": {
-      "url": "http://127.0.0.1:8788/mcp"
+      "url": "http://127.0.0.1:8788/mcp",
+      "headers": {
+        "Authorization": "Bearer 2026-str-mcp"
+      }
     }
   }
 }

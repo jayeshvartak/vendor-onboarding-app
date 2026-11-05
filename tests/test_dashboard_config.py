@@ -116,6 +116,8 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8788/mcp", html)
         self.assertIn("streamable HTTP", html)
         self.assertNotIn("stdio", html)
+        self.assertIn("2026-str-mcp", html)
+        self.assertIn("Authorization", html)
         self.assertIn("requestor", html)
         self.assertIn("requested_via", html)
         self.assertIn("submit_onboarding_request", html)
@@ -201,6 +203,20 @@ class DashboardConfigTests(unittest.TestCase):
         self.assertEqual(failed.status_code, 400)
         self.assertIn("Test webhook failed", failed.get_data(as_text=True))
         self.assertEqual([row["url"] for row in vo._read_saved_webhooks()], saved_before)
+
+    def test_configuration_shows_vo_mcp_token(self):
+        os.environ["VO_MCP_TOKEN"] = "from-env-token"
+        try:
+            html = self.client.get("/configuration").get_data(as_text=True)
+            self.assertIn("from-env-token", html)
+            config = json.loads(vo.mcp_client_config())
+            header = config["mcpServers"]["vendor-master"]["headers"]["Authorization"]
+            self.assertEqual(header, "Bearer from-env-token")
+        finally:
+            os.environ.pop("VO_MCP_TOKEN", None)
+        config = json.loads(vo.mcp_client_config())
+        header = config["mcpServers"]["vendor-master"]["headers"]["Authorization"]
+        self.assertEqual(header, "Bearer 2026-str-mcp")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = tempfile.mkdtemp(prefix="vo-mcp-http-")
@@ -44,6 +46,13 @@ class StreamableHttpTests(unittest.TestCase):
                 time.sleep(0.1)
         raise RuntimeError(f"streamable HTTP server did not listen on {PORT}")
 
+    def test_missing_or_wrong_token_is_rejected(self):
+        self.assertEqual(_initialize(None)[0], 401)
+        self.assertEqual(_initialize("wrong-token")[0], 401)
+        status, body = _initialize(mcp_server.mcp_token())
+        self.assertEqual(status, 200)
+        self.assertIn(b"vendor-master", body)
+
     def test_client_lists_vendor_master_tools(self):
         init, listed = asyncio.run(_connect())
         self.assertEqual(init.server_info.name, "vendor-master")
@@ -53,17 +62,41 @@ class StreamableHttpTests(unittest.TestCase):
         self.assertNotIn("create_onboarding_request", names)
         self.assertNotIn("submit_vendor_intake", names)
         self.assertEqual(mcp_server.client_url(), f"http://127.0.0.1:{PORT}/mcp")
+        self.assertEqual(mcp_server.mcp_token(), "2026-str-mcp")
+
+
+def _initialize(token):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        mcp_server.client_url(),
+        data=b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}',
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
 
 
 async def _connect():
+    import httpx2
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
-    async with streamable_http_client(mcp_server.client_url()) as (read, write):
-        async with ClientSession(read, write) as session:
-            init = await session.initialize()
-            listed = await session.list_tools()
-            return init, listed
+    headers = {"Authorization": f"Bearer {mcp_server.mcp_token()}"}
+    async with httpx2.AsyncClient(headers=headers) as http:
+        async with streamable_http_client(mcp_server.client_url(), http_client=http) as (read, write):
+            async with ClientSession(read, write) as session:
+                init = await session.initialize()
+                listed = await session.list_tools()
+                return init, listed
 
 
 if __name__ == "__main__":

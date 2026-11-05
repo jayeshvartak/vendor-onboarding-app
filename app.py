@@ -1270,10 +1270,12 @@ def mcp_endpoint():
 
 
 def mcp_client_config():
+    import mcp_server
     return json.dumps({
         "mcpServers": {
             "vendor-master": {
                 "url": mcp_endpoint(),
+                "headers": {"Authorization": "Bearer " + mcp_server.mcp_token()},
             }
         }
     }, indent=2)
@@ -1291,6 +1293,7 @@ MCP_TOOLS = (
 
 
 def _configuration_page(form=None, code=200):
+    import mcp_server
     body = render_template(
         "configuration.html",
         view="configuration",
@@ -1298,6 +1301,7 @@ def _configuration_page(form=None, code=200):
         form=form or {"name": "", "url": ""},
         mcp_config=mcp_client_config(),
         mcp_url=mcp_endpoint(),
+        mcp_token=mcp_server.mcp_token(),
         mcp_tools=MCP_TOOLS,
     )
     return body if code == 200 else (body, code)

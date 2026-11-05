@@ -6,12 +6,15 @@ Streamable HTTP (the Grok bot connects to this URL):
 
 Default endpoint: http://127.0.0.1:8788/mcp
 Override with VO_MCP_HOST, VO_MCP_PORT, and VO_MCP_PATH.
+Every request must send Authorization: Bearer <token>. The token is
+VO_MCP_TOKEN when that variable is set, otherwise 2026-str-mcp.
 The server reads and writes the same tracker as the web app (VO_STORE_DIR).
 There is no create-onboarding-request tool. submit_onboarding_request creates
 the request and completes Vendor Intake together. Every tool requires
 requestor and requested_via.
 """
 import os
+import secrets
 from typing import Annotated
 
 from pydantic import Field
@@ -25,6 +28,54 @@ MCP_PORT = int(os.environ.get("VO_MCP_PORT", "8788"))
 MCP_PATH = os.environ.get("VO_MCP_PATH", "/mcp")
 if not MCP_PATH.startswith("/"):
     MCP_PATH = "/" + MCP_PATH
+DEFAULT_MCP_TOKEN = "2026-str-mcp"
+
+
+def mcp_token():
+    """Bearer token required on /mcp. VO_MCP_TOKEN replaces the built-in default."""
+    value = os.environ.get("VO_MCP_TOKEN", "").strip()
+    return value or DEFAULT_MCP_TOKEN
+
+
+def _authorization_header(scope):
+    for name, value in scope.get("headers") or ():
+        if name.lower() == b"authorization":
+            return value.decode("latin-1")
+    return ""
+
+
+def _bearer_matches(header, expected):
+    scheme, _, presented = header.strip().partition(" ")
+    if scheme.lower() != "bearer":
+        return False
+    presented = presented.strip()
+    return len(presented) == len(expected) and secrets.compare_digest(presented, expected)
+
+
+class RequireMcpToken:
+    """Reject MCP HTTP requests that omit the configured bearer token."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        if _bearer_matches(_authorization_header(scope), mcp_token()):
+            await self.app(scope, receive, send)
+            return
+        body = b'{"error":"unauthorized"}'
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", b"Bearer"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
 
 server = MCPServer(
     name="vendor-master",
@@ -164,12 +215,20 @@ def get_onboarding_status(
 
 def serve():
     """Serve MCP over streamable HTTP. Blocks until the process stops."""
-    server.run(
-        transport="streamable-http",
+    import uvicorn
+
+    starlette_app = server.streamable_http_app(
+        streamable_http_path=MCP_PATH,
+        host=MCP_HOST,
+    )
+    starlette_app.add_middleware(RequireMcpToken)
+    config = uvicorn.Config(
+        starlette_app,
         host=MCP_HOST,
         port=MCP_PORT,
-        streamable_http_path=MCP_PATH,
+        log_level=server.settings.log_level.lower(),
     )
+    uvicorn.Server(config).run()
 
 
 def client_url(host=None):
